@@ -1,30 +1,62 @@
 import {
-  PITCH_CLASSES,
   type CircleBucket,
   type DiatonicMode,
   type ModalPlacement,
+  type ModalTransitionMode,
   type ModalVariant,
   type PitchClass,
   type PitchClassLabel,
   type Track,
   type TrackKey,
+  type TransitionDirection,
+  type TransitionProfile,
 } from "./types.ts";
 
-export const CIRCLE_OF_FIFTHS = PITCH_CLASSES;
+export const CIRCLE_OF_FIFTHS = [
+  "A",
+  "E",
+  "B",
+  "F#",
+  "C#",
+  "G#",
+  "D#",
+  "A#",
+  "F",
+  "C",
+  "G",
+  "D",
+] as const satisfies readonly PitchClass[];
 
 export const PITCH_CLASS_LABELS: Record<PitchClass, PitchClassLabel> = {
-  C: { pitch: "C", primary: "Do" },
-  G: { pitch: "G", primary: "Sol" },
-  D: { pitch: "D", primary: "Re" },
-  A: { pitch: "A", primary: "La" },
-  E: { pitch: "E", primary: "Mi" },
-  B: { pitch: "B", primary: "Si" },
-  "F#": { pitch: "F#", primary: "Fa#", enharmonic: "Solb" },
-  "C#": { pitch: "C#", primary: "Do#", enharmonic: "Reb" },
-  "G#": { pitch: "G#", primary: "Sol#", enharmonic: "Lab" },
-  "D#": { pitch: "D#", primary: "Re#", enharmonic: "Mib" },
-  "A#": { pitch: "A#", primary: "La#", enharmonic: "Sib" },
-  F: { pitch: "F", primary: "Fa" },
+  C: { pitch: "C", primary: "Do m" },
+  G: { pitch: "G", primary: "Sol m" },
+  D: { pitch: "D", primary: "Re m" },
+  A: { pitch: "A", primary: "La m" },
+  E: { pitch: "E", primary: "Mi m" },
+  B: { pitch: "B", primary: "Si m" },
+  "F#": { pitch: "F#", primary: "Fa# m", enharmonic: "Solb m" },
+  "C#": { pitch: "C#", primary: "Do# m", enharmonic: "Reb m" },
+  "G#": { pitch: "G#", primary: "Sol# m", enharmonic: "Lab m" },
+  "D#": { pitch: "D#", primary: "Re# m", enharmonic: "Mib m" },
+  "A#": { pitch: "A#", primary: "La# m", enharmonic: "Sib m" },
+  F: { pitch: "F", primary: "Fa m" },
+};
+
+const PURE_MODAL_DISPLAY_OFFSET = 0.37;
+
+const RELATIVE_MINOR_BY_MAJOR: Record<PitchClass, PitchClass> = {
+  C: "A",
+  G: "E",
+  D: "B",
+  A: "F#",
+  E: "C#",
+  B: "G#",
+  "F#": "D#",
+  "C#": "A#",
+  "G#": "F",
+  "D#": "C",
+  "A#": "G",
+  F: "D",
 };
 
 export function getCircleIndex(tonic: PitchClass): number {
@@ -74,27 +106,29 @@ export function getVariantLabel(variant: ModalVariant): string {
 }
 
 export function getModalPlacement(key: TrackKey): ModalPlacement {
-  const homeIndex = getCircleIndex(key.tonic);
-  const collectionIndex = getPureModalCollectionIndex(key);
+  const homeIndex = getHomeSectionIndex(key);
+  const collectionIndex = getModalCollectionIndex(key, homeIndex);
 
   if (collectionIndex === homeIndex) {
     return {
       homeIndex,
       targetIndex: homeIndex,
       displayIndex: homeIndex,
-      lane: key.variant === "raised-leading-tone" ? "modal-mixture" : "home",
+      lane: "home",
       summary:
         key.variant === "raised-leading-tone" ? "Home key with raised leading tone" : "Home key",
     };
   }
 
   if (key.variant === "diatonic") {
+    const displayOffset = getPureModalDisplayOffset(homeIndex, collectionIndex);
+
     return {
       homeIndex,
-      targetIndex: homeIndex,
-      displayIndex: wrapIndex(homeIndex + getPureModalOffset(key.mode)),
+      targetIndex: collectionIndex,
+      displayIndex: wrapIndex(collectionIndex + displayOffset),
       lane: "pure-modal",
-      summary: `Pure ${getModeLabel(key.mode)} in home section`,
+      summary: `Pure ${getModeLabel(key.mode)} in modal collection section`,
     };
   }
 
@@ -105,6 +139,106 @@ export function getModalPlacement(key: TrackKey): ModalPlacement {
     lane: "modal-mixture",
     summary: `${getModeLabel(key.mode)} with modal mixture`,
   };
+}
+
+export function getTransitionProfile(key: TrackKey | null): TransitionProfile | null {
+  if (!key) {
+    return null;
+  }
+
+  const placement = getModalPlacement(key);
+
+  if (placement.lane === "home") {
+    return {
+      kind: "home",
+      section: placement.homeIndex,
+    };
+  }
+
+  const mode = getModalTransitionMode(key.mode);
+  const targetSection = getModalCollectionIndex(key, placement.homeIndex);
+
+  if (placement.lane === "pure-modal") {
+    return {
+      direction: getModalDirection(mode),
+      homeSection: placement.homeIndex,
+      kind: "pure-modal",
+      mode,
+      targetSection,
+    };
+  }
+
+  return {
+    boundarySections: uniqueIndexes([placement.homeIndex, placement.targetIndex]) as [
+      number,
+      number,
+    ],
+    direction: getModalDirection(mode),
+    homeSection: placement.homeIndex,
+    kind: "modal-mixture",
+    mode,
+    targetSection: placement.targetIndex,
+  };
+}
+
+export function canKeysTransition(previousKey: TrackKey | null, nextKey: TrackKey | null): boolean {
+  const previousProfile = getTransitionProfile(previousKey);
+  const nextProfile = getTransitionProfile(nextKey);
+
+  if (!previousProfile || !nextProfile) {
+    return false;
+  }
+
+  return canTransitionProfiles(previousProfile, nextProfile);
+}
+
+export function areKeysTransitionCompatible(
+  firstKey: TrackKey | null,
+  secondKey: TrackKey | null,
+): boolean {
+  return canKeysTransition(firstKey, secondKey) || canKeysTransition(secondKey, firstKey);
+}
+
+export function canTransitionProfiles(
+  previous: TransitionProfile,
+  next: TransitionProfile,
+): boolean {
+  if (previous.kind === "home" && next.kind === "home") {
+    return circularIndexDistance(previous.section, next.section) <= 1;
+  }
+
+  if (previous.kind === "home" && next.kind === "pure-modal") {
+    return previous.section === next.targetSection;
+  }
+
+  if (previous.kind === "pure-modal" && next.kind === "home") {
+    return next.section === previous.targetSection;
+  }
+
+  if (previous.kind === "pure-modal" && next.kind === "pure-modal") {
+    return (
+      previous.mode === next.mode &&
+      circularIndexDistance(previous.homeSection, next.homeSection) <= 1
+    );
+  }
+
+  if (previous.kind === "home" && next.kind === "modal-mixture") {
+    return next.boundarySections.includes(previous.section);
+  }
+
+  if (previous.kind === "modal-mixture" && next.kind === "home") {
+    return previous.boundarySections.includes(next.section);
+  }
+
+  if (previous.kind === "modal-mixture" && next.kind === "modal-mixture") {
+    return hasSameBoundary(previous.boundarySections, next.boundarySections);
+  }
+
+  if (previous.kind === "modal-mixture" && next.kind === "pure-modal") {
+    return previous.homeSection === next.homeSection && previous.mode === next.mode;
+  }
+
+  return false;
 }
 
 export function createEmptyCircleBuckets(): CircleBucket[] {
@@ -124,7 +258,9 @@ export function bucketTracksByTonic(tracks: readonly Track[]): CircleBucket[] {
       continue;
     }
 
-    const bucket = buckets[getCircleIndex(track.key.tonic)];
+    const placement = getModalPlacement(track.key);
+    const bucket =
+      buckets[placement.lane === "pure-modal" ? placement.targetIndex : placement.homeIndex];
 
     if (bucket) {
       bucket.tracks.push(track);
@@ -134,9 +270,22 @@ export function bucketTracksByTonic(tracks: readonly Track[]): CircleBucket[] {
   return buckets;
 }
 
-function getPureModalCollectionIndex(key: TrackKey): number {
-  const homeIndex = getCircleIndex(key.tonic);
+function getHomeSectionIndex(key: TrackKey): number {
+  switch (key.mode) {
+    case "major":
+    case "lydian":
+    case "mixolydian":
+      return getCircleIndex(RELATIVE_MINOR_BY_MAJOR[key.tonic]);
+    case "natural-minor":
+    case "dorian":
+    case "phrygian":
+      return getCircleIndex(key.tonic);
+    default:
+      return assertNever(key.mode);
+  }
+}
 
+function getModalCollectionIndex(key: TrackKey, homeIndex: number): number {
   switch (key.mode) {
     case "major":
     case "natural-minor":
@@ -152,17 +301,35 @@ function getPureModalCollectionIndex(key: TrackKey): number {
   }
 }
 
-function getPureModalOffset(mode: DiatonicMode): number {
+function getPureModalDisplayOffset(homeIndex: number, collectionIndex: number): number {
+  return getSignedCircularOffset(collectionIndex, homeIndex) > 0
+    ? PURE_MODAL_DISPLAY_OFFSET
+    : -PURE_MODAL_DISPLAY_OFFSET;
+}
+
+function getModalTransitionMode(mode: DiatonicMode): ModalTransitionMode {
   switch (mode) {
+    case "dorian":
+    case "phrygian":
+    case "lydian":
+    case "mixolydian":
+      return mode;
     case "major":
     case "natural-minor":
-      return 0;
+      throw new Error(`${getModeLabel(mode)} is not a modal transition mode`);
+    default:
+      return assertNever(mode);
+  }
+}
+
+function getModalDirection(mode: ModalTransitionMode): TransitionDirection {
+  switch (mode) {
     case "dorian":
     case "lydian":
-      return 0.18;
+      return "clockwise";
     case "phrygian":
     case "mixolydian":
-      return -0.18;
+      return "counter";
     default:
       return assertNever(mode);
   }
@@ -182,6 +349,32 @@ function getMidpointIndex(from: number, to: number): number {
 
 function wrapIndex(index: number): number {
   return (index + 12) % 12;
+}
+
+function circularIndexDistance(first: number, second: number): number {
+  const direct = Math.abs(first - second);
+
+  return Math.min(direct, 12 - direct);
+}
+
+function hasSameBoundary(first: readonly number[], second: readonly number[]): boolean {
+  return first.length === second.length && first.every((section) => second.includes(section));
+}
+
+function uniqueIndexes(indexes: readonly number[]): number[] {
+  return [...new Set(indexes.map((index) => wrapIndex(index)))];
+}
+
+function getSignedCircularOffset(from: number, to: number): number {
+  let delta = to - from;
+
+  if (delta > 6) {
+    delta -= 12;
+  } else if (delta < -6) {
+    delta += 12;
+  }
+
+  return delta;
 }
 
 function assertNever(value: never): never {

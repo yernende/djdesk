@@ -155,6 +155,13 @@ h2 {
   stroke: rgba(23, 27, 24, 0.42);
 }
 
+.sector.last-draft {
+  fill: rgba(244, 193, 55, 0.46);
+  stroke: #171b18;
+  stroke-width: 3;
+  stroke-dasharray: 8 5;
+}
+
 .section-label {
   cursor: pointer;
 }
@@ -173,52 +180,98 @@ h2 {
 
 .section-label.active .label-main,
 .section-label.active .label-alt {
-  fill: #9d3d2f;
-}
-
-.track-cluster {
-  cursor: pointer;
-}
-
-.track-cluster circle {
-  fill: #f4c137;
-  stroke: #171b18;
-  stroke-width: 2;
-  transition:
-    transform 150ms ease,
-    stroke-width 150ms ease;
-  transform-box: fill-box;
-  transform-origin: center;
-}
-
-.track-cluster.home circle {
-  fill: #f4c137;
-}
-
-.track-cluster.pure-modal circle {
-  fill: #1c6f5d;
-}
-
-.track-cluster.modal-mixture circle {
-  fill: #d95f3d;
-}
-
-.track-cluster.active circle,
-.track-cluster:hover circle {
-  stroke-width: 4;
-  transform: scale(1.08);
-}
-
-.cluster-count {
-  pointer-events: none;
-  font-weight: 950;
   fill: #171b18;
-  font-size: 0.82rem;
+  paint-order: stroke fill;
+  stroke: #fffaf0;
+  stroke-width: 4px;
 }
 
-.track-cluster.pure-modal .cluster-count,
-.track-cluster.modal-mixture .cluster-count {
-  fill: #fffaf0;
+.section-label.last-draft .label-main {
+  paint-order: stroke fill;
+  stroke: #fffaf0;
+  stroke-width: 5px;
+}
+
+.subsection,
+.boundary-zone {
+  cursor: pointer;
+  pointer-events: all;
+  transition:
+    fill 150ms ease,
+    stroke 150ms ease,
+    stroke-width 150ms ease;
+}
+
+.subsection.home {
+  fill: rgba(244, 193, 55, 0.2);
+  stroke: rgba(23, 27, 24, 0.14);
+  stroke-width: 1;
+}
+
+.subsection.pure-modal {
+  fill: rgba(255, 250, 240, 0.42);
+  stroke: rgba(23, 27, 24, 0.16);
+  stroke-width: 1;
+}
+
+.boundary-zone {
+  fill: rgba(23, 27, 24, 0.05);
+  stroke: rgba(23, 27, 24, 0.2);
+  stroke-width: 1.5;
+}
+
+.subsection.pure-modal.empty,
+.boundary-zone.empty {
+  fill: rgba(255, 250, 240, 0);
+  stroke: rgba(23, 27, 24, 0);
+}
+
+.subsection.compatible,
+.boundary-zone.compatible {
+  fill: rgba(28, 111, 93, 0.24);
+  stroke: rgba(28, 111, 93, 0.66);
+}
+
+.subsection.incompatible,
+.boundary-zone.incompatible {
+  fill: rgba(157, 61, 47, 0.18);
+  stroke: rgba(157, 61, 47, 0.52);
+}
+
+.subsection.last-draft,
+.boundary-zone.last-draft {
+  fill: rgba(244, 193, 55, 0.56);
+  stroke: #171b18;
+  stroke-width: 3;
+  stroke-dasharray: 8 5;
+}
+
+.subsection.active,
+.subsection:hover,
+.boundary-zone.active,
+.boundary-zone:hover {
+  fill: rgba(244, 193, 55, 0.48);
+  stroke: #171b18;
+  stroke-width: 2.5;
+}
+
+.zone-count {
+  pointer-events: none;
+  fill: #171b18;
+  font-size: 1.05rem;
+  font-weight: 950;
+  paint-order: stroke fill;
+  stroke: rgba(255, 250, 240, 0.88);
+  stroke-width: 5px;
+}
+
+.zone-count.pure-modal,
+.zone-count.boundary {
+  font-size: 0.78rem;
+}
+
+.zone-count.boundary {
+  stroke-width: 4px;
 }
 
 .center-readout circle {
@@ -429,11 +482,11 @@ li {
 }
 
 .mode-chip.pure-modal {
-  background: #cfe2d8;
+  background: #f7df8c;
 }
 
 .mode-chip.modal-mixture {
-  background: #f5c6b8;
+  background: #f7df8c;
 }
 
 .mode-chip.unknown-key {

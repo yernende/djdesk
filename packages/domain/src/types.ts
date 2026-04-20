@@ -35,6 +35,10 @@ export type VerificationState = "estimated" | "confirmed" | "rejected";
 
 export type ModalPlacementLane = "home" | "pure-modal" | "modal-mixture";
 
+export type ModalTransitionMode = Exclude<DiatonicMode, "major" | "natural-minor">;
+
+export type TransitionDirection = "clockwise" | "counter";
+
 export interface TrackKey {
   tonic: PitchClass;
   mode: DiatonicMode;
@@ -48,6 +52,27 @@ export interface ModalPlacement {
   lane: ModalPlacementLane;
   summary: string;
 }
+
+export type TransitionProfile =
+  | {
+      kind: "home";
+      section: number;
+    }
+  | {
+      direction: TransitionDirection;
+      homeSection: number;
+      kind: "pure-modal";
+      mode: ModalTransitionMode;
+      targetSection: number;
+    }
+  | {
+      boundarySections: readonly [number, number];
+      direction: TransitionDirection;
+      homeSection: number;
+      kind: "modal-mixture";
+      mode: ModalTransitionMode;
+      targetSection: number;
+    };
 
 export interface TrackAnalysisConfidence {
   bpm: VerificationState;

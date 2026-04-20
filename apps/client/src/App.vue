@@ -2,9 +2,11 @@
 import { computed, onMounted, ref, watch } from "vue";
 
 import {
+  areKeysTransitionCompatible,
+  canKeysTransition,
   CIRCLE_OF_FIFTHS,
+  getTransitionProfile,
   PITCH_CLASS_LABELS,
-  type ModalPlacementLane,
   type VerificationState,
 } from "@djdesk/domain";
 
@@ -15,15 +17,17 @@ import {
   type TrackView,
 } from "./api.ts";
 
-interface TrackCluster {
-  angleIndex: number;
-  count: number;
-  lane: ModalPlacementLane;
-  radius: number;
-  tracks: TrackView[];
-  x: number;
-  y: number;
-}
+type SectionSlice = "home" | "pure-clockwise" | "pure-counter";
+type CompatibilityClass = "compatible" | "incompatible" | null;
+
+const DEFAULT_DRAFT_LENGTH = 6;
+const DEFAULT_DRAFT_START_SECTION = 0;
+const ZONE_INNER_RADIUS = 104;
+const ZONE_OUTER_RADIUS = 232;
+const MAIN_ZONE_HALF_WIDTH = 0.23;
+const PURE_ZONE_START = 0.25;
+const PURE_ZONE_END = 0.42;
+const BOUNDARY_ZONE_HALF_WIDTH = 0.07;
 
 const tracks = ref<TrackView[]>([]);
 const errorMessage = ref("");
@@ -32,7 +36,8 @@ const harmonyErrorMessage = ref("");
 const isHarmonyLoading = ref(false);
 const isUnknownKeyShelfSelected = ref(false);
 const selectedBoundaryIndex = ref<number | null>(null);
-const selectedSection = ref(3);
+const selectedSection = ref(DEFAULT_DRAFT_START_SECTION);
+const selectedSlice = ref<SectionSlice>("home");
 const selectedTrack = ref<TrackView | null>(null);
 const setDraft = ref<string[]>([]);
 const trackHarmony = ref<TrackHarmonyResponse | null>(null);
@@ -63,7 +68,9 @@ const selectedSectionTracks = computed(() => {
   }
 
   return tracks.value
-    .filter((track) => trackTouchesSection(track, selectedSection.value))
+    .filter((track) =>
+      trackBelongsToSectionSlice(track, selectedSection.value, selectedSlice.value),
+    )
     .sort((first, second) => first.bpm - second.bpm);
 });
 
@@ -74,7 +81,7 @@ const browserTitle = computed(() =>
     ? `${unknownKeyTracks.value.length} unplaced tracks`
     : selectedBoundaryIndex.value !== null
       ? `${selectedSectionTracks.value.length} boundary tracks`
-      : `${selectedSectionTracks.value.length} nearby tracks`,
+      : `${selectedSectionTracks.value.length} ${getSliceBrowserLabel(selectedSlice.value)} tracks`,
 );
 
 const confirmedCount = computed(
@@ -93,6 +100,8 @@ const draftTracks = computed(() =>
     .filter((track): track is TrackView => Boolean(track)),
 );
 
+const lastDraftTrack = computed(() => draftTracks.value.at(-1) ?? null);
+
 const selectedTrackInDraft = computed(() =>
   selectedTrack.value ? setDraft.value.includes(selectedTrack.value.id) : false,
 );
@@ -108,14 +117,7 @@ const isAddTransitionRisky = computed(() => {
     return false;
   }
 
-  const previousSection = getTrackSectionIndex(previousTrack);
-  const nextSection = getTrackSectionIndex(selectedTrack.value);
-
-  if (previousSection === null || nextSection === null) {
-    return true;
-  }
-
-  return circularDistance(previousSection, nextSection) > 1;
+  return !canTracksFollow(previousTrack, selectedTrack.value);
 });
 
 const visibleChordSegments = computed(() => trackHarmony.value?.chordSegments ?? []);
@@ -124,50 +126,24 @@ const usedChordList = computed(
   () => trackHarmony.value?.usedChords ?? selectedTrack.value?.chordProgression ?? [],
 );
 
-const trackClusters = computed<TrackCluster[]>(() => {
-  const grouped = new Map<string, TrackView[]>();
-
-  for (const track of tracks.value) {
-    if (!track.placement) {
-      continue;
-    }
-
-    const key = `${track.placement.lane}:${track.placement.displayIndex.toFixed(1)}`;
-    const group = grouped.get(key);
-
-    if (group) {
-      group.push(track);
-    } else {
-      grouped.set(key, [track]);
-    }
-  }
-
-  return [...grouped.values()].map((group) => {
-    const firstTrack = group[0];
-
-    if (!firstTrack) {
-      throw new Error("Unexpected empty cluster");
-    }
-
-    const placement = firstTrack.placement;
-
-    if (!placement) {
-      throw new Error("Unexpected unknown-key track in cluster");
-    }
-
-    const point = polarPoint(placement.displayIndex, getLaneRadius(placement.lane));
-
-    return {
-      angleIndex: placement.displayIndex,
-      count: group.length,
-      lane: placement.lane,
-      radius: getClusterRadius(group.length),
-      tracks: group,
-      x: point.x,
-      y: point.y,
-    };
-  });
-});
+const sectionZoneSummaries = computed(() =>
+  sections.value.map((section) => ({
+    boundaryAfterCount: getBoundaryTracks(getBoundaryAfterIndex(section.index)).length,
+    boundaryAfterLabelPoint: polarPoint(section.index + 0.5, 214),
+    boundaryAfterPath: boundaryZonePath(section.index),
+    homeCount: getSectionSliceTracks(section.index, "home").length,
+    homeLabelPoint: polarPoint(section.index, 168),
+    index: section.index,
+    mainPath: subsectionPath(section.index, -MAIN_ZONE_HALF_WIDTH, MAIN_ZONE_HALF_WIDTH),
+    pureClockwiseCount: getSectionSliceTracks(section.index, "pure-clockwise").length,
+    pureClockwiseLabelPoint: polarPoint(section.index + 0.37, 196),
+    pureClockwisePath: subsectionPath(section.index, PURE_ZONE_START, PURE_ZONE_END),
+    pureCounterCount: getSectionSliceTracks(section.index, "pure-counter").length,
+    pureCounterLabelPoint: polarPoint(section.index - 0.37, 196),
+    pureCounterPath: subsectionPath(section.index, -PURE_ZONE_END, -PURE_ZONE_START),
+    section,
+  })),
+);
 
 onMounted(async () => {
   try {
@@ -177,12 +153,13 @@ onMounted(async () => {
     selectedTrack.value = response.tracks[0] ?? null;
     selectedSection.value = selectedTrack.value?.placement
       ? Math.round(selectedTrack.value.placement.displayIndex) % 12
-      : 3;
+      : DEFAULT_DRAFT_START_SECTION;
     selectedBoundaryIndex.value = selectedTrack.value?.placement
       ? getBoundaryIndex(selectedTrack.value.placement)
       : null;
+    selectedSlice.value = selectedTrack.value ? getTrackSectionSlice(selectedTrack.value) : "home";
     isUnknownKeyShelfSelected.value = Boolean(selectedTrack.value && !selectedTrack.value.key);
-    setDraft.value = response.tracks.slice(0, 4).map((track) => track.id);
+    setDraft.value = buildClockwiseDraft(response.tracks);
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "Unknown API error";
   } finally {
@@ -217,9 +194,22 @@ watch(
 );
 
 function selectSection(index: number): void {
+  selectSectionSlice(index, "home");
+}
+
+function selectSectionSlice(index: number, slice: SectionSlice): void {
   isUnknownKeyShelfSelected.value = false;
   selectedBoundaryIndex.value = null;
   selectedSection.value = index;
+  selectedSlice.value = slice;
+  selectedTrack.value = selectedSectionTracks.value[0] ?? selectedTrack.value;
+}
+
+function selectBoundary(boundaryIndex: number): void {
+  isUnknownKeyShelfSelected.value = false;
+  selectedBoundaryIndex.value = boundaryIndex;
+  selectedSection.value = Math.floor(boundaryIndex);
+  selectedSlice.value = "home";
   selectedTrack.value = selectedSectionTracks.value[0] ?? selectedTrack.value;
 }
 
@@ -229,29 +219,19 @@ function selectTrack(track: TrackView): void {
   if (track.placement) {
     isUnknownKeyShelfSelected.value = false;
     selectedBoundaryIndex.value = getBoundaryIndex(track.placement);
-    selectedSection.value = Math.round(track.placement.displayIndex) % 12;
+    selectedSection.value = getTrackSectionIndex(track) ?? track.placement.homeIndex;
+    selectedSlice.value = getTrackSectionSlice(track);
   } else {
     isUnknownKeyShelfSelected.value = true;
     selectedBoundaryIndex.value = null;
+    selectedSlice.value = "home";
   }
-}
-
-function selectCluster(cluster: TrackCluster): void {
-  isUnknownKeyShelfSelected.value = false;
-  selectedBoundaryIndex.value = getBoundaryIndex({
-    displayIndex: cluster.angleIndex,
-    homeIndex: Math.floor(cluster.angleIndex),
-    lane: cluster.lane,
-    summary: "",
-    targetIndex: Math.ceil(cluster.angleIndex) % 12,
-  });
-  selectedSection.value = Math.round(cluster.angleIndex) % 12;
-  selectedTrack.value = cluster.tracks[0] ?? selectedTrack.value;
 }
 
 function selectUnknownKeyTracks(): void {
   isUnknownKeyShelfSelected.value = true;
   selectedBoundaryIndex.value = null;
+  selectedSlice.value = "home";
   selectedTrack.value = unknownKeyTracks.value[0] ?? selectedTrack.value;
 }
 
@@ -267,23 +247,133 @@ function removeFromDraft(id: string): void {
   setDraft.value = setDraft.value.filter((trackId) => trackId !== id);
 }
 
+function buildClockwiseDraft(sourceTracks: readonly TrackView[]): string[] {
+  const starts = [
+    DEFAULT_DRAFT_START_SECTION,
+    ...sections.value
+      .map((section) => section.index)
+      .filter((index) => index !== DEFAULT_DRAFT_START_SECTION),
+  ];
+  let bestDraft: string[] = [];
+
+  for (const start of starts) {
+    const usedTrackIds = new Set<string>();
+    const draft: string[] = [];
+
+    for (let offset = 0; offset < DEFAULT_DRAFT_LENGTH; offset += 1) {
+      const sectionIndex = (start + offset) % 12;
+      const track = pickDraftTrackForSection(sourceTracks, sectionIndex, usedTrackIds);
+
+      if (!track) {
+        break;
+      }
+
+      usedTrackIds.add(track.id);
+      draft.push(track.id);
+    }
+
+    if (draft.length > bestDraft.length) {
+      bestDraft = draft;
+    }
+
+    if (draft.length === DEFAULT_DRAFT_LENGTH) {
+      return draft;
+    }
+  }
+
+  return bestDraft;
+}
+
+function pickDraftTrackForSection(
+  sourceTracks: readonly TrackView[],
+  sectionIndex: number,
+  usedTrackIds: ReadonlySet<string>,
+): TrackView | null {
+  const candidates = sourceTracks
+    .filter((track) => !usedTrackIds.has(track.id) && getTrackSectionIndex(track) === sectionIndex)
+    .sort(compareDraftCandidates);
+
+  return candidates[0] ?? null;
+}
+
+function compareDraftCandidates(first: TrackView, second: TrackView): number {
+  const firstScore = getDraftCandidateScore(first);
+  const secondScore = getDraftCandidateScore(second);
+
+  if (firstScore !== secondScore) {
+    return secondScore - firstScore;
+  }
+
+  if (first.bpm !== second.bpm) {
+    return first.bpm - second.bpm;
+  }
+
+  return first.title.localeCompare(second.title);
+}
+
+function getDraftCandidateScore(track: TrackView): number {
+  let score = 0;
+
+  if (track.placement?.lane === "home") {
+    score += 2;
+  }
+
+  if (track.confidence.key === "confirmed") {
+    score += 1;
+  }
+
+  if (track.confidence.bpm === "confirmed") {
+    score += 1;
+  }
+
+  return score;
+}
+
 function hasHarmonyNotes(track: TrackView): boolean {
   return Boolean(track.harmonyNotes?.trim());
 }
 
 function sectorPath(index: number): string {
-  const start = indexToAngle(index - 0.5);
-  const end = indexToAngle(index + 0.5);
-  const outerStart = pointAt(start, 248);
-  const outerEnd = pointAt(end, 248);
-  const innerStart = pointAt(start, 92);
-  const innerEnd = pointAt(end, 92);
+  return annularSectorPath(index - 0.5, index + 0.5, 92, 248);
+}
+
+function subsectionPath(index: number, startOffset: number, endOffset: number): string {
+  return annularSectorPath(
+    index + startOffset,
+    index + endOffset,
+    ZONE_INNER_RADIUS,
+    ZONE_OUTER_RADIUS,
+  );
+}
+
+function boundaryZonePath(index: number): string {
+  return annularSectorPath(
+    index + 0.5 - BOUNDARY_ZONE_HALF_WIDTH,
+    index + 0.5 + BOUNDARY_ZONE_HALF_WIDTH,
+    ZONE_INNER_RADIUS,
+    ZONE_OUTER_RADIUS,
+  );
+}
+
+function annularSectorPath(
+  startIndex: number,
+  endIndex: number,
+  innerRadius: number,
+  outerRadius: number,
+): string {
+  const start = indexToAngle(startIndex);
+  const end = indexToAngle(endIndex);
+  const outerStart = pointAt(start, outerRadius);
+  const outerEnd = pointAt(end, outerRadius);
+  const innerStart = pointAt(start, innerRadius);
+  const innerEnd = pointAt(end, innerRadius);
+  const largeArcFlag = Math.abs(endIndex - startIndex) > 6 ? 1 : 0;
 
   return [
     `M ${outerStart.x} ${outerStart.y}`,
-    `A 248 248 0 0 1 ${outerEnd.x} ${outerEnd.y}`,
+    `A ${outerRadius} ${outerRadius} 0 ${largeArcFlag} 1 ${outerEnd.x} ${outerEnd.y}`,
     `L ${innerEnd.x} ${innerEnd.y}`,
-    `A 92 92 0 0 0 ${innerStart.x} ${innerStart.y}`,
+    `A ${innerRadius} ${innerRadius} 0 ${largeArcFlag} 0 ${innerStart.x} ${innerStart.y}`,
     "Z",
   ].join(" ");
 }
@@ -294,37 +384,36 @@ function labelTransform(index: number, radius: number): string {
   return `translate(${point.x.toFixed(2)} ${point.y.toFixed(2)})`;
 }
 
-function getLaneRadius(lane: ModalPlacementLane): number {
-  switch (lane) {
-    case "home":
-      return 174;
-    case "pure-modal":
-      return 174;
-    case "modal-mixture":
-      return 174;
-    default:
-      return 174;
-  }
-}
-
-function getClusterRadius(count: number): number {
-  return Math.min(30, 10 + Math.sqrt(count) * 4.2);
-}
-
 function formatSeconds(value: number): string {
   return value.toFixed(2);
 }
 
-function trackTouchesSection(track: TrackView, sectionIndex: number): boolean {
+function trackBelongsToSectionSlice(
+  track: TrackView,
+  sectionIndex: number,
+  slice: SectionSlice,
+): boolean {
   if (!track.placement) {
     return false;
   }
 
-  return (
-    circularDistance(track.placement.displayIndex, sectionIndex) <= 0.55 ||
-    track.placement.homeIndex === sectionIndex ||
-    track.placement.targetIndex === sectionIndex
-  );
+  if (slice === "home") {
+    return track.placement.lane === "home" && track.placement.homeIndex === sectionIndex;
+  }
+
+  if (track.placement.lane !== "pure-modal") {
+    return false;
+  }
+
+  return getTrackSectionIndex(track) === sectionIndex && getPureModalSide(track) === slice;
+}
+
+function getSectionSliceTracks(sectionIndex: number, slice: SectionSlice): TrackView[] {
+  return tracks.value.filter((track) => trackBelongsToSectionSlice(track, sectionIndex, slice));
+}
+
+function getBoundaryTracks(boundaryIndex: number): TrackView[] {
+  return tracks.value.filter((track) => trackTouchesBoundary(track, boundaryIndex));
 }
 
 function trackTouchesBoundary(track: TrackView, boundaryIndex: number): boolean {
@@ -341,6 +430,89 @@ function getTrackSectionIndex(track: TrackView): number | null {
   }
 
   return Math.round(track.placement.displayIndex) % 12;
+}
+
+function getTrackSectionSlice(track: TrackView): SectionSlice {
+  const pureSide = getPureModalSide(track);
+
+  return pureSide ?? "home";
+}
+
+function getPureModalSide(track: TrackView): Exclude<SectionSlice, "home"> | null {
+  if (!track.placement || track.placement.lane !== "pure-modal") {
+    return null;
+  }
+
+  const sectionIndex = getTrackSectionIndex(track);
+
+  if (sectionIndex === null) {
+    return null;
+  }
+
+  return getSignedCircularOffset(sectionIndex, track.placement.displayIndex) > 0
+    ? "pure-clockwise"
+    : "pure-counter";
+}
+
+function getBoundaryAfterIndex(index: number): number {
+  return index === 11 ? 11.5 : index + 0.5;
+}
+
+function getSliceBrowserLabel(slice: SectionSlice): string {
+  switch (slice) {
+    case "home":
+      return "home";
+    case "pure-clockwise":
+      return "clockwise pure modal";
+    case "pure-counter":
+      return "counter pure modal";
+    default:
+      return assertNever(slice);
+  }
+}
+
+function canTracksFollow(previousTrack: TrackView, nextTrack: TrackView): boolean {
+  return canKeysTransition(previousTrack.key, nextTrack.key);
+}
+
+function getTrackTouchedSections(track: TrackView): number[] {
+  const profile = getTransitionProfile(track.key);
+
+  if (!profile) {
+    return [];
+  }
+
+  if (profile.kind === "home") {
+    return [profile.section];
+  }
+
+  if (profile.kind === "pure-modal") {
+    return [profile.targetSection];
+  }
+
+  return [...profile.boundarySections];
+}
+
+function getSectionSliceCompatibilityClass(index: number, slice: SectionSlice): CompatibilityClass {
+  return getCompatibilityClass(getSectionSliceTracks(index, slice));
+}
+
+function getBoundaryCompatibilityClass(boundaryIndex: number): CompatibilityClass {
+  return getCompatibilityClass(getBoundaryTracks(boundaryIndex));
+}
+
+function getCompatibilityClass(candidateTracks: readonly TrackView[]): CompatibilityClass {
+  const referenceKey = lastDraftTrack.value?.key ?? null;
+
+  if (!referenceKey || candidateTracks.length === 0) {
+    return null;
+  }
+
+  return candidateTracks.some(
+    (track) => track.key && areKeysTransitionCompatible(referenceKey, track.key),
+  )
+    ? "compatible"
+    : "incompatible";
 }
 
 function getBoundaryIndex(placement: TrackView["placement"]): number | null {
@@ -369,28 +541,54 @@ function getSelectedPositionLabel(): string {
     return `${beforeLabel} / ${afterLabel} boundary`;
   }
 
-  return sections.value[selectedSection.value]?.label.primary ?? "Do";
+  const sectionLabel = sections.value[selectedSection.value]?.label.primary ?? "La m";
+
+  switch (selectedSlice.value) {
+    case "home":
+      return sectionLabel;
+    case "pure-clockwise":
+      return `${sectionLabel} clockwise modal`;
+    case "pure-counter":
+      return `${sectionLabel} counter modal`;
+    default:
+      return assertNever(selectedSlice.value);
+  }
 }
 
-function isSectionActive(index: number): boolean {
-  if (isUnknownKeyShelfSelected.value) {
-    return false;
-  }
-
-  if (selectedBoundaryIndex.value !== null) {
-    return (
-      index === Math.floor(selectedBoundaryIndex.value) ||
-      index === Math.ceil(selectedBoundaryIndex.value) % 12
-    );
-  }
-
-  return index === selectedSection.value;
+function isSubsectionActive(index: number, slice: SectionSlice): boolean {
+  return isLastDraftSectionSlice(index, slice);
 }
 
-function circularDistance(first: number, second: number): number {
-  const direct = Math.abs(first - second);
+function isBoundaryActive(boundaryIndex: number): boolean {
+  return isLastDraftBoundary(boundaryIndex);
+}
 
-  return Math.min(direct, 12 - direct);
+function isLastDraftSection(index: number): boolean {
+  return lastDraftTrack.value
+    ? getTrackTouchedSections(lastDraftTrack.value).includes(index)
+    : false;
+}
+
+function isLastDraftSectionSlice(index: number, slice: SectionSlice): boolean {
+  return lastDraftTrack.value
+    ? trackBelongsToSectionSlice(lastDraftTrack.value, index, slice)
+    : false;
+}
+
+function isLastDraftBoundary(boundaryIndex: number): boolean {
+  return lastDraftTrack.value ? trackTouchesBoundary(lastDraftTrack.value, boundaryIndex) : false;
+}
+
+function getSignedCircularOffset(from: number, to: number): number {
+  let delta = to - from;
+
+  if (delta > 6) {
+    delta -= 12;
+  } else if (delta < -6) {
+    delta += 12;
+  }
+
+  return delta;
 }
 
 function polarPoint(index: number, radius: number): { x: number; y: number } {
@@ -419,6 +617,10 @@ function confidenceLabel(state: VerificationState): string {
     default:
       return state;
   }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled value: ${String(value)}`);
 }
 </script>
 
@@ -460,17 +662,128 @@ function confidenceLabel(state: VerificationState): string {
               v-for="section in sections"
               :key="section.pitch"
               class="sector"
-              :class="{ active: isSectionActive(section.index) }"
               :d="sectorPath(section.index)"
               @click="selectSection(section.index)"
             />
+          </g>
+
+          <g>
+            <g v-for="zone in sectionZoneSummaries" :key="`${zone.section.pitch}-subsections`">
+              <path
+                class="subsection home"
+                :class="{
+                  active: isSubsectionActive(zone.index, 'home'),
+                  compatible:
+                    getSectionSliceCompatibilityClass(zone.index, 'home') === 'compatible',
+                  incompatible:
+                    getSectionSliceCompatibilityClass(zone.index, 'home') === 'incompatible',
+                  'last-draft': isLastDraftSectionSlice(zone.index, 'home'),
+                }"
+                :d="zone.mainPath"
+                @click.stop="selectSectionSlice(zone.index, 'home')"
+              />
+              <path
+                class="subsection pure-modal"
+                :class="{
+                  active: isSubsectionActive(zone.index, 'pure-counter'),
+                  compatible:
+                    getSectionSliceCompatibilityClass(zone.index, 'pure-counter') === 'compatible',
+                  empty: zone.pureCounterCount === 0,
+                  incompatible:
+                    getSectionSliceCompatibilityClass(zone.index, 'pure-counter') ===
+                    'incompatible',
+                  'last-draft': isLastDraftSectionSlice(zone.index, 'pure-counter'),
+                }"
+                :d="zone.pureCounterPath"
+                @click.stop="selectSectionSlice(zone.index, 'pure-counter')"
+              />
+              <path
+                class="subsection pure-modal"
+                :class="{
+                  active: isSubsectionActive(zone.index, 'pure-clockwise'),
+                  compatible:
+                    getSectionSliceCompatibilityClass(zone.index, 'pure-clockwise') ===
+                    'compatible',
+                  empty: zone.pureClockwiseCount === 0,
+                  incompatible:
+                    getSectionSliceCompatibilityClass(zone.index, 'pure-clockwise') ===
+                    'incompatible',
+                  'last-draft': isLastDraftSectionSlice(zone.index, 'pure-clockwise'),
+                }"
+                :d="zone.pureClockwisePath"
+                @click.stop="selectSectionSlice(zone.index, 'pure-clockwise')"
+              />
+
+              <text
+                v-if="zone.homeCount > 0"
+                class="zone-count home"
+                :x="zone.homeLabelPoint.x"
+                :y="zone.homeLabelPoint.y"
+                text-anchor="middle"
+                dominant-baseline="central"
+              >
+                {{ zone.homeCount }}
+              </text>
+              <text
+                v-if="zone.pureCounterCount > 0"
+                class="zone-count pure-modal"
+                :x="zone.pureCounterLabelPoint.x"
+                :y="zone.pureCounterLabelPoint.y"
+                text-anchor="middle"
+                dominant-baseline="central"
+              >
+                {{ zone.pureCounterCount }}
+              </text>
+              <text
+                v-if="zone.pureClockwiseCount > 0"
+                class="zone-count pure-modal"
+                :x="zone.pureClockwiseLabelPoint.x"
+                :y="zone.pureClockwiseLabelPoint.y"
+                text-anchor="middle"
+                dominant-baseline="central"
+              >
+                {{ zone.pureClockwiseCount }}
+              </text>
+            </g>
+
+            <g v-for="zone in sectionZoneSummaries" :key="`${zone.section.pitch}-boundary`">
+              <path
+                class="boundary-zone"
+                :class="{
+                  active: isBoundaryActive(getBoundaryAfterIndex(zone.index)),
+                  compatible:
+                    getBoundaryCompatibilityClass(getBoundaryAfterIndex(zone.index)) ===
+                    'compatible',
+                  empty: zone.boundaryAfterCount === 0,
+                  incompatible:
+                    getBoundaryCompatibilityClass(getBoundaryAfterIndex(zone.index)) ===
+                    'incompatible',
+                  'last-draft': isLastDraftBoundary(getBoundaryAfterIndex(zone.index)),
+                }"
+                :d="zone.boundaryAfterPath"
+                @click.stop="selectBoundary(getBoundaryAfterIndex(zone.index))"
+              />
+              <text
+                v-if="zone.boundaryAfterCount > 0"
+                class="zone-count boundary"
+                :x="zone.boundaryAfterLabelPoint.x"
+                :y="zone.boundaryAfterLabelPoint.y"
+                text-anchor="middle"
+                dominant-baseline="central"
+              >
+                {{ zone.boundaryAfterCount }}
+              </text>
+            </g>
           </g>
 
           <g
             v-for="section in sections"
             :key="`${section.pitch}-label`"
             class="section-label"
-            :class="{ active: isSectionActive(section.index) }"
+            :class="{
+              active: isLastDraftSection(section.index),
+              'last-draft': isLastDraftSection(section.index),
+            }"
             :transform="labelTransform(section.index, 265)"
             @click="selectSection(section.index)"
           >
@@ -478,26 +791,6 @@ function confidenceLabel(state: VerificationState): string {
             <text v-if="section.label.enharmonic" class="label-alt" y="17" text-anchor="middle">
               {{ section.label.enharmonic }}
             </text>
-          </g>
-
-          <g
-            v-for="cluster in trackClusters"
-            :key="`${cluster.lane}-${cluster.angleIndex}`"
-            class="track-cluster"
-            :class="[
-              cluster.lane,
-              {
-                active: cluster.tracks.some((track) => track.id === selectedTrack?.id),
-              },
-            ]"
-            :transform="`translate(${cluster.x} ${cluster.y})`"
-            @click.stop="selectCluster(cluster)"
-          >
-            <circle :r="cluster.radius" />
-            <text class="cluster-count" text-anchor="middle" dominant-baseline="central">
-              {{ cluster.count }}
-            </text>
-            <title>{{ cluster.count }} tracks · {{ cluster.lane.replace("-", " ") }}</title>
           </g>
 
           <g class="center-readout">
