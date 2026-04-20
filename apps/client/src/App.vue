@@ -23,6 +23,12 @@ type SectionSlice = "home" | "pure-clockwise" | "pure-counter";
 type SectionSelectionScope = "section" | "slice";
 type CompatibilityClass = "compatible" | "incompatible" | null;
 
+interface DraftSet {
+  id: string;
+  name: string;
+  trackIds: string[];
+}
+
 const DEFAULT_DRAFT_LENGTH = 6;
 const DEFAULT_DRAFT_START_SECTION = 0;
 const ZONE_INNER_RADIUS = 104;
@@ -43,7 +49,8 @@ const selectedSection = ref(DEFAULT_DRAFT_START_SECTION);
 const selectedSlice = ref<SectionSlice>("home");
 const selectedSectionScope = ref<SectionSelectionScope>("section");
 const selectedTrack = ref<TrackView | null>(null);
-const setDraft = ref<string[]>([]);
+const draftSets = ref<DraftSet[]>([]);
+const activeDraftSetId = ref("main");
 const trackHarmony = ref<TrackHarmonyResponse | null>(null);
 
 const sections = computed(() =>
@@ -104,20 +111,31 @@ const mixtureCount = computed(
   () => visibleTracks.value.filter((track) => track.placement?.lane === "modal-mixture").length,
 );
 
+const activeDraftSet = computed(
+  () =>
+    draftSets.value.find((draftSet) => draftSet.id === activeDraftSetId.value) ??
+    draftSets.value[0] ??
+    null,
+);
+
+const activeDraftTrackIds = computed(() => activeDraftSet.value?.trackIds ?? []);
+
 const draftTracks = computed(() =>
-  setDraft.value
+  activeDraftTrackIds.value
     .map((id) => tracks.value.find((track) => track.id === id))
     .filter((track): track is TrackView => Boolean(track)),
 );
 
 const lastDraftTrack = computed(() => draftTracks.value.at(-1) ?? null);
 
-const selectedTrackInDraft = computed(() =>
-  selectedTrack.value ? setDraft.value.includes(selectedTrack.value.id) : false,
-);
+const selectedTrackInAnyDraftSet = computed(() => {
+  const trackId = selectedTrack.value?.id;
+
+  return trackId ? draftSets.value.some((draftSet) => draftSet.trackIds.includes(trackId)) : false;
+});
 
 const isAddTransitionRisky = computed(() => {
-  if (!selectedTrack.value || selectedTrackInDraft.value) {
+  if (!selectedTrack.value) {
     return false;
   }
 
@@ -169,7 +187,8 @@ onMounted(async () => {
       : null;
     selectedSlice.value = selectedTrack.value ? getTrackSectionSlice(selectedTrack.value) : "home";
     isUnknownKeyShelfSelected.value = Boolean(selectedTrack.value && !selectedTrack.value.key);
-    setDraft.value = buildClockwiseDraft(response.tracks);
+    draftSets.value = buildMockDraftSets(response.tracks);
+    activeDraftSetId.value = draftSets.value[0]?.id ?? "main";
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "Unknown API error";
   } finally {
@@ -254,24 +273,68 @@ function selectUnknownKeyTracks(): void {
   selectedTrack.value = unknownKeyTracks.value[0] ?? selectedTrack.value;
 }
 
+function selectDraftSet(id: string): void {
+  activeDraftSetId.value = id;
+}
+
 function addSelectedTrack(): void {
-  if (!selectedTrack.value) {
+  if (!selectedTrack.value || !activeDraftSet.value) {
     return;
   }
 
-  setDraft.value = [...setDraft.value, selectedTrack.value.id];
+  updateActiveDraftTrackIds([...activeDraftTrackIds.value, selectedTrack.value.id]);
 }
 
 function removeFromDraftAt(index: number): void {
-  setDraft.value = setDraft.value.filter((_, trackIndex) => trackIndex !== index);
+  updateActiveDraftTrackIds(
+    activeDraftTrackIds.value.filter((_, trackIndex) => trackIndex !== index),
+  );
 }
 
-function buildClockwiseDraft(sourceTracks: readonly TrackView[]): string[] {
+function updateActiveDraftTrackIds(trackIds: string[]): void {
+  const activeSetId = activeDraftSet.value?.id;
+
+  if (!activeSetId) {
+    return;
+  }
+
+  draftSets.value = draftSets.value.map((draftSet) =>
+    draftSet.id === activeSetId
+      ? {
+          ...draftSet,
+          trackIds,
+        }
+      : draftSet,
+  );
+}
+
+function buildMockDraftSets(sourceTracks: readonly TrackView[]): DraftSet[] {
+  return [
+    {
+      id: "main",
+      name: "Festival draft",
+      trackIds: buildClockwiseDraft(sourceTracks, DEFAULT_DRAFT_START_SECTION),
+    },
+    {
+      id: "warmup",
+      name: "Warmup arc",
+      trackIds: buildClockwiseDraft(sourceTracks, 9),
+    },
+    {
+      id: "bridge",
+      name: "Bridge ideas",
+      trackIds: buildClockwiseDraft(sourceTracks, 3),
+    },
+  ];
+}
+
+function buildClockwiseDraft(
+  sourceTracks: readonly TrackView[],
+  preferredStart = DEFAULT_DRAFT_START_SECTION,
+): string[] {
   const starts = [
-    DEFAULT_DRAFT_START_SECTION,
-    ...sections.value
-      .map((section) => section.index)
-      .filter((index) => index !== DEFAULT_DRAFT_START_SECTION),
+    preferredStart,
+    ...sections.value.map((section) => section.index).filter((index) => index !== preferredStart),
   ];
   let bestDraft: string[] = [];
 
@@ -871,8 +934,24 @@ function assertNever(value: never): never {
 
       <aside class="set-chain" aria-label="Draft set chain">
         <div class="panel-heading">
-          <p class="eyebrow">Draft set</p>
+          <div>
+            <p class="eyebrow">Draft sets</p>
+            <h2>{{ activeDraftSet?.name ?? "Draft set" }}</h2>
+          </div>
           <strong>{{ draftTracks.length }}</strong>
+        </div>
+        <div class="set-tabs" aria-label="Draft set selector">
+          <button
+            v-for="draftSet in draftSets"
+            :key="draftSet.id"
+            type="button"
+            class="set-tab"
+            :class="{ active: draftSet.id === activeDraftSetId }"
+            @click="selectDraftSet(draftSet.id)"
+          >
+            <span>{{ draftSet.name }}</span>
+            <small>{{ draftSet.trackIds.length }}</small>
+          </button>
         </div>
         <ol>
           <li v-for="(track, index) in draftTracks" :key="`${track.id}-${index}`">
@@ -921,7 +1000,7 @@ function assertNever(value: never): never {
             <button
               type="button"
               class="add-button"
-              :class="{ risky: isAddTransitionRisky || selectedTrackInDraft }"
+              :class="{ risky: isAddTransitionRisky || selectedTrackInAnyDraftSet }"
               :disabled="!selectedTrack"
               @click="addSelectedTrack"
             >

@@ -329,6 +329,58 @@ h2 {
   font-size: 0.9rem;
 }
 
+.set-tabs {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 12px;
+}
+
+.set-tab {
+  display: grid;
+  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  min-height: 36px;
+  padding: 7px 9px;
+  border: 1px solid rgba(23, 27, 24, 0.14);
+  border-radius: 8px;
+  background: #fffaf0;
+  color: #171b18;
+  cursor: pointer;
+  text-align: left;
+}
+
+.set-tab span {
+  overflow: hidden;
+  font-size: 0.82rem;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.set-tab small {
+  display: grid;
+  place-items: center;
+  min-width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(23, 27, 24, 0.08);
+  color: #5e615d;
+  font-size: 0.72rem;
+  font-weight: 950;
+}
+
+.set-tab.active {
+  border-color: #171b18;
+  background: #171b18;
+  color: #fffaf0;
+}
+
+.set-tab.active small {
+  background: #f4c137;
+  color: #171b18;
+}
+
 ol {
   display: grid;
   gap: 9px;
