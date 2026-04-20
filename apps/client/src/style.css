@@ -195,60 +195,71 @@ h2 {
   fill: #9d3d2f;
 }
 
-.track-point {
+.track-cluster {
   cursor: pointer;
 }
 
-.track-point circle {
+.track-cluster circle {
   fill: #f4c137;
   stroke: #171b18;
   stroke-width: 2;
   transition:
-    r 150ms ease,
+    transform 150ms ease,
     stroke-width 150ms ease;
+  transform-box: fill-box;
+  transform-origin: center;
 }
 
-.track-point.confirmed circle {
+.track-cluster.home circle {
+  fill: #f4c137;
+}
+
+.track-cluster.pure-modal circle {
   fill: #1c6f5d;
 }
 
-.track-point.rejected circle {
-  fill: #9d3d2f;
-}
-
-.track-point.pure-modal circle {
-  stroke-dasharray: 2 2;
-}
-
-.track-point.modal-mixture circle {
+.track-cluster.modal-mixture circle {
   fill: #d95f3d;
 }
 
-.track-point.has-harmony-notes circle {
+.track-cluster.has-harmony-notes circle {
   stroke: #fffaf0;
   stroke-width: 4;
 }
 
-.track-point.has-harmony-notes.selected circle,
-.track-point.has-harmony-notes:hover circle {
+.track-cluster.active circle,
+.track-cluster:hover circle {
+  stroke-width: 4;
+  transform: scale(1.08);
+}
+
+.track-cluster.has-harmony-notes.active circle,
+.track-cluster.has-harmony-notes:hover circle {
   stroke-width: 5;
 }
 
-.harmony-marker {
+.cluster-count,
+.cluster-alert {
   pointer-events: none;
-  fill: #171b18;
-  font-size: 0.55rem;
   font-weight: 950;
 }
 
-.track-point.confirmed .harmony-marker {
+.cluster-count {
+  fill: #171b18;
+  font-size: 0.82rem;
+}
+
+.track-cluster.pure-modal .cluster-count,
+.track-cluster.modal-mixture .cluster-count {
   fill: #fffaf0;
 }
 
-.track-point.selected circle,
-.track-point:hover circle {
-  r: 10;
-  stroke-width: 4;
+.cluster-alert {
+  fill: #fffaf0;
+  paint-order: stroke;
+  stroke: #9d3d2f;
+  stroke-width: 4px;
+  font-size: 0.72rem;
 }
 
 .center-readout circle {
@@ -497,6 +508,87 @@ dd {
   margin: 0;
   font-weight: 780;
   line-height: 1.35;
+}
+
+.chord-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.chord-chip-list span {
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 1px solid rgba(23, 27, 24, 0.14);
+  border-radius: 8px;
+  background: #fffaf0;
+  color: #171b18;
+  font-size: 0.82rem;
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
+.full-chord-table-block dd {
+  font-weight: 700;
+}
+
+.full-chord-table-block details {
+  width: 100%;
+}
+
+.full-chord-table-block summary {
+  width: fit-content;
+  max-width: 100%;
+  padding: 7px 10px;
+  border: 1px solid rgba(23, 27, 24, 0.14);
+  border-radius: 8px;
+  background: #fffaf0;
+  color: #171b18;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 950;
+  overflow-wrap: anywhere;
+}
+
+.segment-table-wrap {
+  max-height: 280px;
+  margin-top: 10px;
+  overflow: auto;
+  border: 1px solid rgba(23, 27, 24, 0.12);
+  border-radius: 8px;
+  background: #fffaf0;
+}
+
+.segment-table-wrap table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.segment-table-wrap th,
+.segment-table-wrap td {
+  padding: 7px 9px;
+  border-bottom: 1px solid rgba(23, 27, 24, 0.08);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.segment-table-wrap th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  background: #e8deca;
+  color: #3f423e;
+  font-size: 0.68rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.segment-table-wrap td:nth-child(4),
+.segment-table-wrap td:nth-child(6) {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .harmony-note-block {

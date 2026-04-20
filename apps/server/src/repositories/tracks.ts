@@ -3,7 +3,27 @@ import type { DatabaseSync } from "node:sqlite";
 import { sampleTracks, type Track } from "@djdesk/domain";
 
 export interface TrackRepository {
+  getTrackHarmony(trackId: string): Promise<TrackHarmony | null>;
   listTracks(): Promise<readonly Track[]>;
+}
+
+export interface TrackHarmony {
+  chordSegments: TrackChordSegment[];
+  trackId: string;
+  usedChords: string[];
+}
+
+export interface TrackChordSegment {
+  bass: string | null;
+  basicLabel: string | null;
+  chord: string;
+  degree: string | null;
+  durationS: number;
+  endS: number;
+  index: number;
+  label: string;
+  midiNotes: string | null;
+  startS: number;
 }
 
 interface TrackRow {
@@ -32,12 +52,49 @@ interface TagRow {
   track_id: string;
 }
 
+interface ChordSegmentRow {
+  bass: string | null;
+  basic_label: string | null;
+  chord: string;
+  degree: string | null;
+  duration_s: number;
+  end_s: number;
+  label: string;
+  midi_notes: string | null;
+  segment_index: number;
+  start_s: number;
+}
+
 export function createInMemoryTrackRepository(
   seed: readonly Track[] = sampleTracks,
 ): TrackRepository {
   const tracks = [...seed];
 
   return {
+    async getTrackHarmony(trackId) {
+      const track = tracks.find((candidate) => candidate.id === trackId);
+
+      if (!track) {
+        return null;
+      }
+
+      return {
+        chordSegments: track.chordProgression.map((symbol, index) => ({
+          bass: null,
+          basicLabel: symbol,
+          chord: symbol,
+          degree: null,
+          durationS: 0,
+          endS: 0,
+          index: index + 1,
+          label: symbol,
+          midiNotes: null,
+          startS: 0,
+        })),
+        trackId,
+        usedChords: [...new Set(track.chordProgression)],
+      };
+    },
     async listTracks() {
       return tracks;
     },
@@ -46,6 +103,56 @@ export function createInMemoryTrackRepository(
 
 export function createSqliteTrackRepository(database: DatabaseSync): TrackRepository {
   return {
+    async getTrackHarmony(trackId) {
+      const trackExists = database.prepare("SELECT 1 FROM tracks WHERE id = ?").get(trackId);
+
+      if (!trackExists) {
+        return null;
+      }
+
+      const rows = database
+        .prepare(
+          `
+            SELECT
+              segment_index,
+              start_s,
+              end_s,
+              duration_s,
+              chord,
+              bass,
+              label,
+              basic_label,
+              degree,
+              midi_notes
+            FROM chordai_chord_segments
+            WHERE report_id = (
+              SELECT id
+              FROM chordai_reports
+              WHERE track_id = ?
+              ORDER BY created_at DESC
+              LIMIT 1
+            )
+            ORDER BY segment_index
+          `,
+        )
+        .all(trackId) as unknown as ChordSegmentRow[];
+
+      if (rows.length === 0) {
+        return {
+          chordSegments: fallbackCompactChordSegments(database, trackId),
+          trackId,
+          usedChords: getCompactUsedChords(database, trackId),
+        };
+      }
+
+      const chordSegments = rows.map(toChordSegment);
+
+      return {
+        chordSegments,
+        trackId,
+        usedChords: getUsedChords(chordSegments),
+      };
+    },
     async listTracks() {
       const trackRows = database
         .prepare(
@@ -97,6 +204,77 @@ export function createSqliteTrackRepository(database: DatabaseSync): TrackReposi
       return trackRows.map((row) => toTrack(row, chords, tags));
     },
   };
+}
+
+function fallbackCompactChordSegments(
+  database: DatabaseSync,
+  trackId: string,
+): TrackChordSegment[] {
+  return (
+    database
+      .prepare(
+        `
+          SELECT symbol
+          FROM track_chords
+          WHERE track_id = ?
+          ORDER BY position
+        `,
+      )
+      .all(trackId) as unknown as { symbol: string }[]
+  ).map((row, index) => ({
+    bass: null,
+    basicLabel: row.symbol,
+    chord: row.symbol,
+    degree: null,
+    durationS: 0,
+    endS: 0,
+    index: index + 1,
+    label: row.symbol,
+    midiNotes: null,
+    startS: 0,
+  }));
+}
+
+function getCompactUsedChords(database: DatabaseSync, trackId: string): string[] {
+  const rows = database
+    .prepare(
+      `
+        SELECT symbol
+        FROM track_chords
+        WHERE track_id = ?
+        ORDER BY position
+      `,
+    )
+    .all(trackId) as unknown as { symbol: string }[];
+
+  return [...new Set(rows.map((row) => row.symbol))];
+}
+
+function toChordSegment(row: ChordSegmentRow): TrackChordSegment {
+  return {
+    bass: row.bass,
+    basicLabel: row.basic_label,
+    chord: row.chord,
+    degree: row.degree,
+    durationS: row.duration_s,
+    endS: row.end_s,
+    index: row.segment_index,
+    label: row.label,
+    midiNotes: row.midi_notes,
+    startS: row.start_s,
+  };
+}
+
+function getUsedChords(segments: readonly TrackChordSegment[]): string[] {
+  const used = new Set<string>();
+
+  for (const segment of segments) {
+    if (segment.label && segment.label !== "N") {
+      used.add(segment.label);
+    }
+  }
+
+  return [...used];
 }
 
 export function seedTracksIfEmpty(

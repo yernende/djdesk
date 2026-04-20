@@ -1,14 +1,22 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 
 import { CIRCLE_OF_FIFTHS, PITCH_CLASS_LABELS } from "@djdesk/domain";
 
-import { fetchTracks, type TrackView } from "./api.ts";
+import {
+  fetchTrackHarmony,
+  fetchTracks,
+  type TrackHarmonyResponse,
+  type TrackView,
+} from "./api.ts";
 
-interface TrackPoint {
+interface TrackCluster {
   angleIndex: number;
+  count: number;
+  hasHarmonyNotes: boolean;
+  lane: TrackView["placement"]["lane"];
   radius: number;
-  track: TrackView;
+  tracks: TrackView[];
   x: number;
   y: number;
 }
@@ -16,9 +24,12 @@ interface TrackPoint {
 const tracks = ref<TrackView[]>([]);
 const errorMessage = ref("");
 const isLoading = ref(true);
+const harmonyErrorMessage = ref("");
+const isHarmonyLoading = ref(false);
 const selectedSection = ref(3);
 const selectedTrack = ref<TrackView | null>(null);
 const setDraft = ref<string[]>([]);
+const trackHarmony = ref<TrackHarmonyResponse | null>(null);
 
 const sections = computed(() =>
   CIRCLE_OF_FIFTHS.map((pitch, index) => ({
@@ -60,11 +71,17 @@ const selectedTrackInDraft = computed(() =>
   selectedTrack.value ? setDraft.value.includes(selectedTrack.value.id) : false,
 );
 
-const trackPoints = computed<TrackPoint[]>(() => {
+const visibleChordSegments = computed(() => trackHarmony.value?.chordSegments ?? []);
+
+const usedChordList = computed(
+  () => trackHarmony.value?.usedChords ?? selectedTrack.value?.chordProgression ?? [],
+);
+
+const trackClusters = computed<TrackCluster[]>(() => {
   const grouped = new Map<string, TrackView[]>();
 
   for (const track of tracks.value) {
-    const key = track.placement.displayIndex.toFixed(1);
+    const key = `${track.placement.lane}:${track.placement.displayIndex.toFixed(1)}`;
     const group = grouped.get(key);
 
     if (group) {
@@ -74,24 +91,29 @@ const trackPoints = computed<TrackPoint[]>(() => {
     }
   }
 
-  return [...grouped.values()].flatMap((group) =>
-    group.map((track, index) => {
-      const laneRadius = getLaneRadius(track);
-      const row = Math.floor(index / 5);
-      const column = index % 5;
-      const angleIndex = track.placement.displayIndex + (column - 2) * 0.035;
-      const radius = laneRadius - row * 16 + (column % 2) * 4;
-      const point = polarPoint(angleIndex, radius);
+  return [...grouped.values()].map((group) => {
+    const firstTrack = group[0];
 
-      return {
-        angleIndex,
-        radius,
-        track,
-        x: point.x,
-        y: point.y,
-      };
-    }),
-  );
+    if (!firstTrack) {
+      throw new Error("Unexpected empty cluster");
+    }
+
+    const point = polarPoint(
+      firstTrack.placement.displayIndex,
+      getLaneRadius(firstTrack.placement.lane),
+    );
+
+    return {
+      angleIndex: firstTrack.placement.displayIndex,
+      count: group.length,
+      hasHarmonyNotes: group.some(hasHarmonyNotes),
+      lane: firstTrack.placement.lane,
+      radius: getClusterRadius(group.length),
+      tracks: group,
+      x: point.x,
+      y: point.y,
+    };
+  });
 });
 
 onMounted(async () => {
@@ -100,6 +122,9 @@ onMounted(async () => {
 
     tracks.value = response.tracks;
     selectedTrack.value = response.tracks[0] ?? null;
+    selectedSection.value = selectedTrack.value
+      ? Math.round(selectedTrack.value.placement.displayIndex) % 12
+      : 3;
     setDraft.value = response.tracks.slice(0, 4).map((track) => track.id);
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "Unknown API error";
@@ -107,6 +132,32 @@ onMounted(async () => {
     isLoading.value = false;
   }
 });
+
+watch(
+  selectedTrack,
+  async (track) => {
+    trackHarmony.value = null;
+    harmonyErrorMessage.value = "";
+
+    if (!track) {
+      return;
+    }
+
+    isHarmonyLoading.value = true;
+
+    try {
+      trackHarmony.value = await fetchTrackHarmony(track.id);
+    } catch (error) {
+      harmonyErrorMessage.value =
+        error instanceof Error ? error.message : "Unknown harmony API error";
+    } finally {
+      isHarmonyLoading.value = false;
+    }
+  },
+  {
+    immediate: false,
+  },
+);
 
 function selectSection(index: number): void {
   selectedSection.value = index;
@@ -116,6 +167,11 @@ function selectSection(index: number): void {
 function selectTrack(track: TrackView): void {
   selectedTrack.value = track;
   selectedSection.value = Math.round(track.placement.displayIndex) % 12;
+}
+
+function selectCluster(cluster: TrackCluster): void {
+  selectedSection.value = Math.round(cluster.angleIndex) % 12;
+  selectedTrack.value = cluster.tracks[0] ?? selectedTrack.value;
 }
 
 function addSelectedTrack(): void {
@@ -157,8 +213,8 @@ function labelTransform(index: number, radius: number): string {
   return `translate(${point.x.toFixed(2)} ${point.y.toFixed(2)})`;
 }
 
-function getLaneRadius(track: TrackView): number {
-  switch (track.placement.lane) {
+function getLaneRadius(lane: TrackView["placement"]["lane"]): number {
+  switch (lane) {
     case "home":
       return 154;
     case "pure-modal":
@@ -168,6 +224,14 @@ function getLaneRadius(track: TrackView): number {
     default:
       return 154;
   }
+}
+
+function getClusterRadius(count: number): number {
+  return Math.min(30, 10 + Math.sqrt(count) * 4.2);
+}
+
+function formatSeconds(value: number): string {
+  return value.toFixed(2);
 }
 
 function trackTouchesSection(track: TrackView, sectionIndex: number): boolean {
@@ -263,30 +327,34 @@ function indexToAngle(index: number): number {
           </g>
 
           <g
-            v-for="point in trackPoints"
-            :key="point.track.id"
-            class="track-point"
+            v-for="cluster in trackClusters"
+            :key="`${cluster.lane}-${cluster.angleIndex}`"
+            class="track-cluster"
             :class="[
-              point.track.placement.lane,
-              point.track.confidence.key,
+              cluster.lane,
               {
-                selected: selectedTrack?.id === point.track.id,
-                'has-harmony-notes': hasHarmonyNotes(point.track),
+                active: cluster.tracks.some((track) => track.id === selectedTrack?.id),
+                'has-harmony-notes': cluster.hasHarmonyNotes,
               },
             ]"
-            :transform="`translate(${point.x} ${point.y})`"
-            @click.stop="selectTrack(point.track)"
+            :transform="`translate(${cluster.x} ${cluster.y})`"
+            @click.stop="selectCluster(cluster)"
           >
-            <circle r="7" />
+            <circle :r="cluster.radius" />
+            <text class="cluster-count" text-anchor="middle" dominant-baseline="central">
+              {{ cluster.count }}
+            </text>
             <text
-              v-if="hasHarmonyNotes(point.track)"
-              class="harmony-marker"
+              v-if="cluster.hasHarmonyNotes"
+              class="cluster-alert"
+              :x="cluster.radius - 1"
+              :y="-cluster.radius + 3"
               text-anchor="middle"
               dominant-baseline="central"
             >
               !
             </text>
-            <title>{{ point.track.title }} - {{ point.track.keyLabel }}</title>
+            <title>{{ cluster.count }} tracks · {{ cluster.lane.replace("-", " ") }}</title>
           </g>
 
           <g class="center-readout">
@@ -392,8 +460,46 @@ function indexToAngle(index: number): number {
               <dd>{{ selectedTrack.placement.summary }}</dd>
             </div>
             <div>
-              <dt>Chords</dt>
-              <dd>{{ selectedTrack.chordProgression.join(" - ") }}</dd>
+              <dt>Used chords</dt>
+              <dd>
+                <span v-if="isHarmonyLoading" class="muted">Loading chords...</span>
+                <span v-else-if="harmonyErrorMessage" class="muted">{{ harmonyErrorMessage }}</span>
+                <span v-else class="chord-chip-list">
+                  <span v-for="chord in usedChordList" :key="chord">{{ chord }}</span>
+                </span>
+              </dd>
+            </div>
+            <div v-if="visibleChordSegments.length > 0" class="full-chord-table-block">
+              <dt>Full chord table</dt>
+              <dd>
+                <details>
+                  <summary>{{ visibleChordSegments.length }} chord segments</summary>
+                  <div class="segment-table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>Start</th>
+                          <th>End</th>
+                          <th>Chord</th>
+                          <th>Bass</th>
+                          <th>Basic</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="segment in visibleChordSegments" :key="segment.index">
+                          <td>{{ segment.index }}</td>
+                          <td>{{ formatSeconds(segment.startS) }}</td>
+                          <td>{{ formatSeconds(segment.endS) }}</td>
+                          <td>{{ segment.label }}</td>
+                          <td>{{ segment.bass ?? "" }}</td>
+                          <td>{{ segment.basicLabel ?? "" }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
+              </dd>
             </div>
             <div v-if="selectedTrack.harmonyNotes" class="harmony-note-block">
               <dt>Harmony note</dt>

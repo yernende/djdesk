@@ -20,8 +20,27 @@ export interface TrackListResponse {
   tracks: TrackView[];
 }
 
+export interface TrackHarmonyResponse {
+  chordSegments: TrackChordSegmentView[];
+  trackId: string;
+  usedChords: string[];
+}
+
 export interface CircleResponse {
   buckets: CircleBucketView[];
+}
+
+interface TrackChordSegmentView {
+  bass: string | null;
+  basicLabel: string | null;
+  chord: string;
+  degree: string | null;
+  durationS: number;
+  endS: number;
+  index: number;
+  label: string;
+  midiNotes: string | null;
+  startS: number;
 }
 
 interface TrackView extends Track {
@@ -46,6 +65,23 @@ export async function registerRoutes(app: FastifyInstance, tracks: TrackReposito
       tracks: savedTracks.map(toTrackView),
     };
   });
+
+  app.get<{ Params: { trackId: string }; Reply: TrackHarmonyResponse | { message: string } }>(
+    "/api/tracks/:trackId/harmony",
+    async (request, reply) => {
+      const harmony = await tracks.getTrackHarmony(request.params.trackId);
+
+      if (!harmony) {
+        reply.code(404);
+
+        return {
+          message: "Track not found",
+        };
+      }
+
+      return harmony;
+    },
+  );
 
   app.get<{ Reply: CircleResponse }>("/api/circle", async () => {
     const savedTracks = await tracks.listTracks();
