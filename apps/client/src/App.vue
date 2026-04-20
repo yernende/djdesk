@@ -315,7 +315,7 @@ function confidenceLabel(state: VerificationState): string {
     case "rejected":
       return "rejected";
     case "estimated":
-      return "estimated";
+      return "unverified";
     default:
       return state;
   }
