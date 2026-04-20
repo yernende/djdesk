@@ -359,11 +359,25 @@ li {
   line-height: 1.15;
 }
 
+.track-row strong {
+  display: -webkit-box;
+  min-height: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .chain-track small,
 .track-row small {
   color: #5e615d;
   font-size: 0.78rem;
   font-weight: 700;
+}
+
+.track-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .icon-button {
@@ -388,15 +402,19 @@ li {
 
 .browser-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+  grid-auto-rows: 132px;
   gap: 9px;
   min-height: 0;
   overflow: auto;
 }
 
 .track-row {
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 8px;
-  min-height: 94px;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .track-row.selected {
@@ -405,14 +423,16 @@ li {
 }
 
 .row-badges {
-  display: flex;
+  display: grid;
   align-items: center;
-  flex-wrap: wrap;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
   min-width: 0;
 }
 
 .mode-chip {
+  grid-column: 1 / -1;
+  justify-self: start;
   width: fit-content;
   max-width: 100%;
   padding: 4px 7px;
@@ -421,6 +441,9 @@ li {
   color: #171b18;
   font-size: 0.7rem;
   font-weight: 900;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   text-transform: uppercase;
 }
 
@@ -438,7 +461,8 @@ li {
 }
 
 .confidence-badge {
-  width: fit-content;
+  display: block;
+  width: 100%;
   max-width: 100%;
   padding: 4px 7px;
   border: 1px solid rgba(23, 27, 24, 0.12);
@@ -447,6 +471,10 @@ li {
   color: #171b18;
   font-size: 0.68rem;
   font-weight: 950;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   text-transform: uppercase;
 }
 
