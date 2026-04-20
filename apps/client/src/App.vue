@@ -147,7 +147,7 @@ const lastDraftTrack = computed(() => draftTracks.value.at(-1) ?? null);
 const selectedTrackInAnyDraftSet = computed(() => {
   const trackId = selectedTrack.value?.id;
 
-  return trackId ? draftSets.value.some((draftSet) => draftSet.trackIds.includes(trackId)) : false;
+  return trackId ? isTrackInAnyDraftSet(trackId) : false;
 });
 
 const isAddTransitionRisky = computed(() => {
@@ -155,13 +155,7 @@ const isAddTransitionRisky = computed(() => {
     return false;
   }
 
-  const previousTrack = draftTracks.value.at(-1);
-
-  if (!previousTrack) {
-    return false;
-  }
-
-  return !canTracksFollow(previousTrack, selectedTrack.value);
+  return isTrackTransitionRisky(selectedTrack.value);
 });
 
 const addButtonLabel = computed(() => (selectedTrackInAnyDraftSet.value ? "Add again" : "Add"));
@@ -292,7 +286,7 @@ function selectSection(index: number): void {
   selectedBoundaryIndex.value = null;
   selectedSection.value = index;
   selectedSectionScope.value = "section";
-  selectedTrack.value = selectedSectionTracks.value[0] ?? selectedTrack.value;
+  selectPreferredBrowserTrack();
 }
 
 function isAudioElementPlaying(audioElement: HTMLAudioElement | null): boolean {
@@ -305,7 +299,7 @@ function selectSectionSlice(index: number, slice: SectionSlice): void {
   selectedSection.value = index;
   selectedSlice.value = slice;
   selectedSectionScope.value = "slice";
-  selectedTrack.value = selectedSectionTracks.value[0] ?? selectedTrack.value;
+  selectPreferredBrowserTrack();
 }
 
 function selectBoundary(boundaryIndex: number): void {
@@ -314,7 +308,7 @@ function selectBoundary(boundaryIndex: number): void {
   selectedSection.value = Math.floor(boundaryIndex);
   selectedSlice.value = "home";
   selectedSectionScope.value = "slice";
-  selectedTrack.value = selectedSectionTracks.value[0] ?? selectedTrack.value;
+  selectPreferredBrowserTrack();
 }
 
 function selectTrack(track: TrackView): void {
@@ -339,7 +333,30 @@ function selectUnknownKeyTracks(): void {
   selectedBoundaryIndex.value = null;
   selectedSlice.value = "home";
   selectedSectionScope.value = "section";
-  selectedTrack.value = unknownKeyTracks.value[0] ?? selectedTrack.value;
+  selectPreferredBrowserTrack();
+}
+
+function selectPreferredBrowserTrack(): void {
+  selectedTrack.value =
+    getPreferredBrowserTrack(selectedSectionTracks.value) ?? selectedTrack.value;
+}
+
+function getPreferredBrowserTrack(trackList: readonly TrackView[]): TrackView | null {
+  return trackList.find((track) => !isAddButtonRedForTrack(track)) ?? trackList[0] ?? null;
+}
+
+function isAddButtonRedForTrack(track: TrackView): boolean {
+  return isTrackInAnyDraftSet(track.id) || isTrackTransitionRisky(track);
+}
+
+function isTrackInAnyDraftSet(trackId: string): boolean {
+  return draftSets.value.some((draftSet) => draftSet.trackIds.includes(trackId));
+}
+
+function isTrackTransitionRisky(track: TrackView): boolean {
+  const previousTrack = draftTracks.value.at(-1);
+
+  return Boolean(previousTrack && !canTracksFollow(previousTrack, track));
 }
 
 function selectDraftSet(id: string): void {
