@@ -290,11 +290,11 @@ export function canTransitionProfiles(
   }
 
   if (previous.kind === "home" && next.kind === "pure-modal") {
-    return previous.section === next.homeSection || previous.section === next.targetSection;
+    return circularIndexDistance(previous.section, next.targetSection) <= 1;
   }
 
   if (previous.kind === "pure-modal" && next.kind === "home") {
-    return next.section === previous.homeSection || next.section === previous.targetSection;
+    return circularIndexDistance(previous.targetSection, next.section) <= 1;
   }
 
   if (previous.kind === "pure-modal" && next.kind === "pure-modal") {

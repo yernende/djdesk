@@ -57,10 +57,11 @@ The draft-set `Add` warning is directional: it checks whether the selected track
 can follow the last draft track.
 
 - `home -> home` is valid when the sections are the same or adjacent.
-- `home -> pure modal` is valid when the home section matches either the pure
-  modal track's home section or target collection section.
-- `pure modal -> home` is valid when the next home section matches either the
-  pure modal track's home section or target collection section.
+- `home -> pure modal` is valid when the home section is the pure modal track's
+  target collection section or a neighbor of that target collection section.
+- `pure modal -> home` is valid when the next home section is the pure modal
+  track's target collection section or a neighbor of that target collection
+  section.
 - `pure modal -> pure modal` is valid when both tracks use the same modal mode
   and their home sections are the same or adjacent.
 - `home -> modal mixture` is valid when the home section belongs to that
@@ -86,6 +87,8 @@ A natural minor -> A Phrygian pure        valid
 A natural minor -> E Dorian pure          warning
 A natural minor -> E Phrygian pure        valid
 A natural minor -> E Dorian mixture       warning
+A Dorian pure -> B natural minor          valid
+B natural minor -> A Dorian pure          valid
 
 A natural minor -> A Dorian mixture       valid
 A natural minor -> E Phrygian mixture     valid

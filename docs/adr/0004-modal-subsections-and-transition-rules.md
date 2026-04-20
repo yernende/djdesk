@@ -46,9 +46,9 @@ Use these directed transition rules for the draft-set `Add` warning:
 - pure modal can move to pure modal with the same mode and same or neighboring
   home tonic.
 - home can move to pure modal when the home section is the pure modal track's
-  home section or target collection section.
+  target collection section or a neighboring section.
 - pure modal can move to home when the home section is the pure modal track's
-  home section or target collection section.
+  target collection section or a neighboring section.
 - home can move to modal mixture when the home section belongs to that
   modal-mixture boundary.
 - modal mixture can move to home when the home section belongs to that

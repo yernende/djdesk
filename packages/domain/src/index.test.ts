@@ -285,6 +285,22 @@ test("pure modal transitions follow modal vectors", () => {
     ),
     true,
   );
+
+  assert.equal(
+    canKeysTransition(
+      { tonic: "A", mode: "dorian", variant: "diatonic" },
+      { tonic: "B", mode: "natural-minor", variant: "diatonic" },
+    ),
+    true,
+  );
+
+  assert.equal(
+    canKeysTransition(
+      { tonic: "B", mode: "natural-minor", variant: "diatonic" },
+      { tonic: "A", mode: "dorian", variant: "diatonic" },
+    ),
+    true,
+  );
 });
 
 test("modal mixture transitions use their own boundary pairs", () => {
