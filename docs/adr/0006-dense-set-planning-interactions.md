@@ -60,7 +60,9 @@ Expose draft set editing directly in the chain:
 - tracks can be moved with up/down controls.
 - tracks can also be reordered with native drag-and-drop.
 - after any edit, every adjacent transition is re-evaluated.
-- the second track in a risky adjacent pair receives a `Non-harmonic` warning.
+- risky adjacent pairs are shown as red `Non-harmonic transition` dividers
+  between the two tracks, because non-harmonicity is a relationship between
+  neighboring set positions rather than an attribute of either track alone.
 
 Add a `Sort harmonically` control for the active draft set:
 
@@ -71,6 +73,27 @@ Add a `Sort harmonically` control for the active draft set:
   only tie-breakers.
 - if no fully compatible sequence exists, the best available order is applied
   and remaining risky joins stay visibly marked.
+
+Add BPM compatibility to the track browser:
+
+- browser tracks are sorted against the last track in the active draft set.
+- the primary browser sort is a soft BPM compatibility score, followed by
+  harmonic compatibility as a tie-breaker.
+- the BPM score compares the real BPM values directly; half-time and
+  double-time equivalence are intentionally not considered because this
+  workflow does not mix that way.
+- the score is displayed as a number and clipped progress meter on each track
+  card.
+- the progress meter uses one fixed red-yellow-green scale and clips the
+  unfilled right side, so short bars do not rescale the full gradient.
+
+Keep verification confidence close to the values it qualifies:
+
+- track cards do not show large standalone `Key unverified` or
+  `BPM unverified` badges.
+- key and BPM confidence labels are rendered inline next to the corresponding
+  key or BPM value.
+- the focus panel uses the same inline confidence pattern.
 
 Keep the future focused-view idea documented but out of scope for this change:
 a later map mode may show only the active sector and neighboring sectors instead
@@ -83,6 +106,12 @@ of the full circle, improving tap targets on small screens.
 - Unknown-key tracks are no longer presented as if they belonged to the harmonic
   map.
 - The operator can intentionally create, inspect, and repair non-harmonic joins.
+- Non-harmonic warnings are easier to interpret because they are attached to
+  transitions, not track cards.
+- BPM proximity becomes visible during next-track browsing without imposing a
+  hard compatibility cutoff.
+- Track cards are less visually noisy while still preserving unverified key and
+  BPM information.
 - The draft set chain becomes editable without introducing a persistence layer
   change yet.
 - Harmonic sorting is useful as a fast repair tool but remains explainable and

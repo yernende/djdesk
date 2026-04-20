@@ -47,6 +47,7 @@ const MAIN_ZONE_HALF_WIDTH = 0.23;
 const PURE_ZONE_START = 0.25;
 const PURE_ZONE_END = 0.42;
 const BOUNDARY_ZONE_HALF_WIDTH = 0.07;
+const BPM_SCORE_HALF_LIFE = 0.06;
 
 const tracks = ref<TrackView[]>([]);
 const errorMessage = ref("");
@@ -81,24 +82,24 @@ const unknownKeyTracks = computed(() =>
 
 const selectedSectionTracks = computed(() => {
   if (isUnknownKeyShelfSelected.value) {
-    return unknownKeyTracks.value;
+    return sortBrowserTracks(unknownKeyTracks.value);
   }
 
   if (selectedBoundaryIndex.value !== null) {
-    return tracks.value
-      .filter((track) => trackTouchesBoundary(track, selectedBoundaryIndex.value ?? 0))
-      .sort((first, second) => first.bpm - second.bpm);
+    return sortBrowserTracks(
+      tracks.value.filter((track) => trackTouchesBoundary(track, selectedBoundaryIndex.value ?? 0)),
+    );
   }
 
   if (selectedSectionScope.value === "section") {
-    return getSectionTracks(selectedSection.value).sort((first, second) => first.bpm - second.bpm);
+    return sortBrowserTracks(getSectionTracks(selectedSection.value));
   }
 
-  return tracks.value
-    .filter((track) =>
+  return sortBrowserTracks(
+    tracks.value.filter((track) =>
       trackBelongsToSectionSlice(track, selectedSection.value, selectedSlice.value),
-    )
-    .sort((first, second) => first.bpm - second.bpm);
+    ),
+  );
 });
 
 const selectedLabel = computed(() => getSelectedPositionLabel());
@@ -802,6 +803,75 @@ function isDraftTransitionRisky(index: number): boolean {
   return Boolean(previousTrack && nextTrack && !canTracksFollow(previousTrack, nextTrack));
 }
 
+function sortBrowserTracks(trackList: readonly TrackView[]): TrackView[] {
+  return [...trackList].sort(compareBrowserTracks);
+}
+
+function compareBrowserTracks(first: TrackView, second: TrackView): number {
+  const referenceTrack = lastDraftTrack.value;
+
+  if (referenceTrack) {
+    const firstScore = getBpmCompatibilityScore(referenceTrack.bpm, first.bpm);
+    const secondScore = getBpmCompatibilityScore(referenceTrack.bpm, second.bpm);
+
+    if (firstScore !== secondScore) {
+      return secondScore - firstScore;
+    }
+
+    const firstHarmonicScore = canTracksFollow(referenceTrack, first) ? 1 : 0;
+    const secondHarmonicScore = canTracksFollow(referenceTrack, second) ? 1 : 0;
+
+    if (firstHarmonicScore !== secondHarmonicScore) {
+      return secondHarmonicScore - firstHarmonicScore;
+    }
+  }
+
+  if (first.bpm !== second.bpm) {
+    return first.bpm - second.bpm;
+  }
+
+  return first.title.localeCompare(second.title);
+}
+
+function getTrackBpmCompatibilityScore(track: TrackView): number | null {
+  const referenceTrack = lastDraftTrack.value;
+
+  return referenceTrack ? getBpmCompatibilityScore(referenceTrack.bpm, track.bpm) : null;
+}
+
+function getTrackBpmCompatibilityWidth(track: TrackView): string {
+  return `${getTrackBpmCompatibilityScore(track) ?? 0}%`;
+}
+
+function getTrackBpmCompatibilityTitle(track: TrackView): string {
+  const referenceTrack = lastDraftTrack.value;
+
+  if (!referenceTrack) {
+    return "No draft endpoint selected";
+  }
+
+  const deltaPercent = getBpmDeltaRatio(referenceTrack.bpm, track.bpm) * 100;
+  const score = getBpmCompatibilityScore(referenceTrack.bpm, track.bpm);
+
+  return `BPM match against ${referenceTrack.bpm} BPM: ${score}/100, ${deltaPercent.toFixed(1)}% apart`;
+}
+
+function getBpmCompatibilityScore(referenceBpm: number, candidateBpm: number): number {
+  const deltaRatio = getBpmDeltaRatio(referenceBpm, candidateBpm);
+  const normalizedDelta = deltaRatio / BPM_SCORE_HALF_LIFE;
+  const score = 100 / (1 + normalizedDelta * normalizedDelta);
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function getBpmDeltaRatio(referenceBpm: number, candidateBpm: number): number {
+  if (referenceBpm <= 0 || candidateBpm <= 0) {
+    return 1;
+  }
+
+  return Math.abs(candidateBpm - referenceBpm) / referenceBpm;
+}
+
 function getTrackTouchedSections(track: TrackView): number[] {
   const profile = getTransitionProfile(track.key);
 
@@ -1292,7 +1362,6 @@ function assertNever(value: never): never {
             :class="{
               dragging: draggedDraftIndex === index,
               'drag-over': dragOverDraftIndex === index,
-              'non-harmonic': isDraftTransitionRisky(index),
             }"
             draggable="true"
             @dragstart="startDraftDrag($event, index)"
@@ -1301,12 +1370,16 @@ function assertNever(value: never): never {
             @drop="dropDraftTrack($event, index)"
             @dragend="endDraftDrag"
           >
-            <button
-              type="button"
-              class="chain-track"
-              :class="{ 'non-harmonic': isDraftTransitionRisky(index) }"
-              @click="selectTrack(track)"
+            <div
+              v-if="isDraftTransitionRisky(index)"
+              class="chain-transition-divider"
+              title="Non-harmonic transition between these tracks"
             >
+              <span></span>
+              <strong>Non-harmonic transition</strong>
+              <span></span>
+            </div>
+            <button type="button" class="chain-track" @click="selectTrack(track)">
               <span class="chain-index">{{ index + 1 }}</span>
               <strong>
                 {{ track.title }}
@@ -1319,13 +1392,6 @@ function assertNever(value: never): never {
                 </span>
               </strong>
               <small>{{ track.bpm }} BPM · {{ track.keyLabel }}</small>
-              <span
-                v-if="isDraftTransitionRisky(index)"
-                class="chain-transition-warning"
-                title="Non-harmonic transition from previous track"
-              >
-                Non-harmonic
-              </span>
             </button>
             <div class="chain-controls" aria-label="Draft track controls">
               <button
@@ -1399,12 +1465,6 @@ function assertNever(value: never): never {
               <span class="mode-chip" :class="track.placement?.lane ?? 'unknown-key'">
                 {{ placementLaneLabel(track.placement?.lane) }}
               </span>
-              <span class="confidence-badge" :class="track.confidence.key">
-                Key {{ confidenceLabel(track.confidence.key) }}
-              </span>
-              <span class="confidence-badge" :class="track.confidence.bpm">
-                BPM {{ confidenceLabel(track.confidence.bpm) }}
-              </span>
               <span
                 v-if="hasHarmonyNotes(track)"
                 class="harmony-badge"
@@ -1414,7 +1474,46 @@ function assertNever(value: never): never {
               </span>
             </span>
             <strong>{{ track.title }}</strong>
-            <small>{{ track.bpm }} BPM · {{ track.keyLabel }}</small>
+            <small class="track-card-meta">
+              <span>
+                {{ track.bpm }} BPM
+                <span
+                  v-if="track.confidence.bpm !== 'confirmed'"
+                  class="inline-confidence"
+                  :class="track.confidence.bpm"
+                >
+                  {{ confidenceLabel(track.confidence.bpm) }}
+                </span>
+              </span>
+              <span class="meta-separator">·</span>
+              <span>
+                {{ track.keyLabel }}
+                <span
+                  v-if="track.confidence.key !== 'confirmed'"
+                  class="inline-confidence"
+                  :class="track.confidence.key"
+                >
+                  {{ confidenceLabel(track.confidence.key) }}
+                </span>
+              </span>
+            </small>
+            <span
+              v-if="lastDraftTrack"
+              class="bpm-score"
+              :title="getTrackBpmCompatibilityTitle(track)"
+            >
+              <span class="bpm-score-label">
+                <span>BPM match</span>
+                <span class="bpm-score-value">{{ getTrackBpmCompatibilityScore(track) }}</span>
+              </span>
+              <span
+                class="bpm-score-meter"
+                :style="{ '--bpm-score': getTrackBpmCompatibilityWidth(track) }"
+                aria-hidden="true"
+              >
+                <span></span>
+              </span>
+            </span>
           </button>
         </div>
       </section>
@@ -1429,7 +1528,11 @@ function assertNever(value: never): never {
               <dt>Key</dt>
               <dd class="value-with-badges">
                 {{ selectedTrack.keyLabel }}
-                <span class="confidence-badge" :class="selectedTrack.confidence.key">
+                <span
+                  v-if="selectedTrack.confidence.key !== 'confirmed'"
+                  class="inline-confidence"
+                  :class="selectedTrack.confidence.key"
+                >
                   {{ confidenceLabel(selectedTrack.confidence.key) }}
                 </span>
               </dd>
@@ -1438,7 +1541,11 @@ function assertNever(value: never): never {
               <dt>BPM</dt>
               <dd class="value-with-badges">
                 {{ selectedTrack.bpm }}
-                <span class="confidence-badge" :class="selectedTrack.confidence.bpm">
+                <span
+                  v-if="selectedTrack.confidence.bpm !== 'confirmed'"
+                  class="inline-confidence"
+                  :class="selectedTrack.confidence.bpm"
+                >
                   {{ confidenceLabel(selectedTrack.confidence.bpm) }}
                 </span>
               </dd>
