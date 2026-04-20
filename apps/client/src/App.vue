@@ -20,6 +20,7 @@ import {
 type SectionSlice = "home" | "pure-clockwise" | "pure-counter";
 type SectionSelectionScope = "section" | "slice";
 type CompatibilityClass = "compatible" | "incompatible" | null;
+type MobilePanel = "focus" | "map" | "set" | "tracks";
 type PlacementLane = NonNullable<TrackView["placement"]>["lane"];
 
 interface DraftSet {
@@ -66,6 +67,7 @@ const trackHarmony = ref<TrackHarmonyResponse | null>(null);
 const draggedDraftIndex = ref<number | null>(null);
 const dragOverDraftIndex = ref<number | null>(null);
 const audioPlayer = ref<HTMLAudioElement | null>(null);
+const activeMobilePanel = ref<MobilePanel>("map");
 
 const sections = computed(() =>
   CIRCLE_OF_FIFTHS.map((pitch, index) => ({
@@ -213,6 +215,29 @@ const sectionZoneSummaries = computed(() =>
   })),
 );
 
+const mobileTabs = computed(() => [
+  {
+    count: visibleTracks.value.length,
+    id: "map" as const,
+    label: "Map",
+  },
+  {
+    count: selectedSectionTracks.value.length,
+    id: "tracks" as const,
+    label: "Tracks",
+  },
+  {
+    count: selectedTrack.value?.audioAvailable ? "audio" : "info",
+    id: "focus" as const,
+    label: "Focus",
+  },
+  {
+    count: draftTracks.value.length,
+    id: "set" as const,
+    label: "Set",
+  },
+]);
+
 onMounted(async () => {
   try {
     const response = await fetchTracks();
@@ -287,6 +312,7 @@ function selectSection(index: number): void {
   selectedSection.value = index;
   selectedSectionScope.value = "section";
   selectPreferredBrowserTrack();
+  setActiveMobilePanel("tracks");
 }
 
 function isAudioElementPlaying(audioElement: HTMLAudioElement | null): boolean {
@@ -300,6 +326,7 @@ function selectSectionSlice(index: number, slice: SectionSlice): void {
   selectedSlice.value = slice;
   selectedSectionScope.value = "slice";
   selectPreferredBrowserTrack();
+  setActiveMobilePanel("tracks");
 }
 
 function selectBoundary(boundaryIndex: number): void {
@@ -309,10 +336,12 @@ function selectBoundary(boundaryIndex: number): void {
   selectedSlice.value = "home";
   selectedSectionScope.value = "slice";
   selectPreferredBrowserTrack();
+  setActiveMobilePanel("tracks");
 }
 
 function selectTrack(track: TrackView): void {
   selectedTrack.value = track;
+  setActiveMobilePanel("focus");
 
   if (track.placement) {
     isUnknownKeyShelfSelected.value = false;
@@ -334,6 +363,11 @@ function selectUnknownKeyTracks(): void {
   selectedSlice.value = "home";
   selectedSectionScope.value = "section";
   selectPreferredBrowserTrack();
+  setActiveMobilePanel("tracks");
+}
+
+function setActiveMobilePanel(panel: MobilePanel): void {
+  activeMobilePanel.value = panel;
 }
 
 function selectPreferredBrowserTrack(): void {
@@ -1198,7 +1232,11 @@ function assertNever(value: never): never {
     </header>
 
     <section class="desk-grid">
-      <section class="wheel-panel" aria-label="Circle of fifths desk">
+      <section
+        class="wheel-panel"
+        :class="{ 'mobile-active': activeMobilePanel === 'map' }"
+        aria-label="Circle of fifths desk"
+      >
         <div v-if="isLoading" class="state-line">Loading modal map...</div>
         <div v-else-if="errorMessage" class="state-line error">{{ errorMessage }}</div>
         <svg v-else class="circle-map" viewBox="-300 -300 600 600" role="img">
@@ -1366,7 +1404,11 @@ function assertNever(value: never): never {
         </button>
       </section>
 
-      <aside class="set-chain" aria-label="Draft set chain">
+      <aside
+        class="set-chain"
+        :class="{ 'mobile-active': activeMobilePanel === 'set' }"
+        aria-label="Draft set chain"
+      >
         <div class="panel-heading">
           <div>
             <p class="eyebrow">Draft sets</p>
@@ -1466,7 +1508,11 @@ function assertNever(value: never): never {
         </ol>
       </aside>
 
-      <section class="track-browser" aria-label="Tracks in selected sector">
+      <section
+        class="track-browser"
+        :class="{ 'mobile-active': activeMobilePanel === 'tracks' }"
+        aria-label="Tracks in selected sector"
+      >
         <div class="panel-heading">
           <div>
             <p class="eyebrow">{{ selectedLabel }} sector</p>
@@ -1564,7 +1610,11 @@ function assertNever(value: never): never {
         </div>
       </section>
 
-      <aside class="focus-panel" aria-label="Selected track">
+      <aside
+        class="focus-panel"
+        :class="{ 'mobile-active': activeMobilePanel === 'focus' }"
+        aria-label="Selected track"
+      >
         <p class="eyebrow">Focus track</p>
         <template v-if="selectedTrack">
           <h2>{{ selectedTrack.title }}</h2>
@@ -1673,5 +1723,17 @@ function assertNever(value: never): never {
         <p v-else class="muted">Select a dot or row.</p>
       </aside>
     </section>
+    <nav class="mobile-tab-bar" aria-label="Mobile workspace sections">
+      <button
+        v-for="tab in mobileTabs"
+        :key="tab.id"
+        type="button"
+        :class="{ active: activeMobilePanel === tab.id }"
+        @click="setActiveMobilePanel(tab.id)"
+      >
+        <span>{{ tab.label }}</span>
+        <small>{{ tab.count }}</small>
+      </button>
+    </nav>
   </main>
 </template>
