@@ -7,6 +7,7 @@ export {
   createEmptyCircleBuckets,
   describeKey,
   getCircleIndex,
+  getKeyTonicLabel,
   getModeLabel,
   getModalPlacement,
   getPitchClassLabel,

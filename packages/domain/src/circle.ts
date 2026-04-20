@@ -27,29 +27,82 @@ export const CIRCLE_OF_FIFTHS = [
   "D",
 ] as const satisfies readonly PitchClass[];
 
-const SOLMIZATION_PITCH_LABELS: Record<PitchClass, Omit<PitchClassLabel, "pitch">> = {
-  C: { primary: "Do" },
-  G: { primary: "Sol" },
-  D: { primary: "Re" },
-  A: { primary: "La" },
-  E: { primary: "Mi" },
-  B: { primary: "Si" },
-  "F#": { primary: "Fa♯", enharmonic: "Sol♭" },
-  "C#": { primary: "Do♯", enharmonic: "Re♭" },
-  "G#": { primary: "Sol♯", enharmonic: "La♭" },
-  "D#": { primary: "Re♯", enharmonic: "Mi♭" },
-  "A#": { primary: "La♯", enharmonic: "Si♭" },
-  F: { primary: "Fa" },
+type LetterName = "A" | "B" | "C" | "D" | "E" | "F" | "G";
+
+interface PitchSpelling {
+  accidental: -1 | 0 | 1;
+  label: string;
+  letter: LetterName;
+}
+
+const LETTER_ORDER = ["C", "D", "E", "F", "G", "A", "B"] as const satisfies readonly LetterName[];
+
+const NATURAL_PITCH_VALUES: Record<LetterName, number> = {
+  C: 0,
+  D: 2,
+  E: 4,
+  F: 5,
+  G: 7,
+  A: 9,
+  B: 11,
+};
+
+const MODE_INTERVALS: Record<DiatonicMode, readonly number[]> = {
+  major: [0, 2, 4, 5, 7, 9, 11],
+  "natural-minor": [0, 2, 3, 5, 7, 8, 10],
+  dorian: [0, 2, 3, 5, 7, 9, 10],
+  phrygian: [0, 1, 3, 5, 7, 8, 10],
+  lydian: [0, 2, 4, 6, 7, 9, 11],
+  mixolydian: [0, 2, 4, 5, 7, 9, 10],
+};
+
+const SOLMIZATION_PITCH_SPELLINGS: Record<PitchClass, readonly PitchSpelling[]> = {
+  C: [{ accidental: 0, label: "Do", letter: "C" }],
+  G: [{ accidental: 0, label: "Sol", letter: "G" }],
+  D: [{ accidental: 0, label: "Re", letter: "D" }],
+  A: [{ accidental: 0, label: "La", letter: "A" }],
+  E: [{ accidental: 0, label: "Mi", letter: "E" }],
+  B: [{ accidental: 0, label: "Si", letter: "B" }],
+  "F#": [
+    { accidental: 1, label: "Fa♯", letter: "F" },
+    { accidental: -1, label: "Sol♭", letter: "G" },
+  ],
+  "C#": [
+    { accidental: 1, label: "Do♯", letter: "C" },
+    { accidental: -1, label: "Re♭", letter: "D" },
+  ],
+  "G#": [
+    { accidental: 1, label: "Sol♯", letter: "G" },
+    { accidental: -1, label: "La♭", letter: "A" },
+  ],
+  "D#": [
+    { accidental: 1, label: "Re♯", letter: "D" },
+    { accidental: -1, label: "Mi♭", letter: "E" },
+  ],
+  "A#": [
+    { accidental: 1, label: "La♯", letter: "A" },
+    { accidental: -1, label: "Si♭", letter: "B" },
+  ],
+  F: [{ accidental: 0, label: "Fa", letter: "F" }],
+};
+
+const CANONICAL_TIE_ACCIDENTAL_BY_PITCH: Partial<Record<PitchClass, -1 | 1>> = {
+  "C#": 1,
+  "F#": 1,
+  "G#": 1,
+  "D#": -1,
+  "A#": -1,
 };
 
 export const PITCH_CLASS_LABELS: Record<PitchClass, PitchClassLabel> = CIRCLE_OF_FIFTHS.reduce(
   (labels, pitch) => {
-    const solmization = SOLMIZATION_PITCH_LABELS[pitch];
+    const solmization = getCanonicalMinorSectionSpelling(pitch);
+    const enharmonic = getAlternatePitchSpelling(pitch, solmization);
 
     labels[pitch] = {
       pitch,
-      primary: `${solmization.primary} m`,
-      ...(solmization.enharmonic ? { enharmonic: `${solmization.enharmonic} m` } : {}),
+      primary: `${solmization.label} m`,
+      ...(enharmonic ? { enharmonic: `${enharmonic} m` } : {}),
     };
 
     return labels;
@@ -98,9 +151,17 @@ export function getModeLabel(mode: DiatonicMode): string {
 }
 
 export function getPitchClassLabel(pitch: PitchClass): string {
-  const label = SOLMIZATION_PITCH_LABELS[pitch];
+  const label = getCanonicalMinorSectionSpelling(pitch);
+  const enharmonic = getAlternatePitchSpelling(pitch, label);
 
-  return label.enharmonic ? `${label.primary} / ${label.enharmonic}` : label.primary;
+  return enharmonic ? `${label.label} / ${enharmonic}` : label.label;
+}
+
+export function getKeyTonicLabel(key: TrackKey): string {
+  const spelling = getCanonicalKeySpelling(key);
+  const enharmonic = getAlternatePitchSpelling(key.tonic, spelling);
+
+  return enharmonic ? `${spelling.label} / ${enharmonic}` : spelling.label;
 }
 
 export function describeKey(key: TrackKey | null): string {
@@ -110,7 +171,7 @@ export function describeKey(key: TrackKey | null): string {
 
   const variant = key.variant === "diatonic" ? "" : `, ${getVariantLabel(key.variant)}`;
 
-  return `${getPitchClassLabel(key.tonic)} ${getModeLabel(key.mode)}${variant}`;
+  return `${getKeyTonicLabel(key)} ${getModeLabel(key.mode)}${variant}`;
 }
 
 export function getVariantLabel(variant: ModalVariant): string {
@@ -229,11 +290,11 @@ export function canTransitionProfiles(
   }
 
   if (previous.kind === "home" && next.kind === "pure-modal") {
-    return previous.section === next.targetSection;
+    return previous.section === next.homeSection || previous.section === next.targetSection;
   }
 
   if (previous.kind === "pure-modal" && next.kind === "home") {
-    return next.section === previous.targetSection;
+    return next.section === previous.homeSection || next.section === previous.targetSection;
   }
 
   if (previous.kind === "pure-modal" && next.kind === "pure-modal") {
@@ -328,6 +389,81 @@ function getPureModalDisplayOffset(homeIndex: number, collectionIndex: number): 
     : -PURE_MODAL_DISPLAY_OFFSET;
 }
 
+function getCanonicalMinorSectionSpelling(pitch: PitchClass): PitchSpelling {
+  return getPreferredSpelling(pitch, "natural-minor");
+}
+
+function getCanonicalKeySpelling(key: TrackKey): PitchSpelling {
+  return getPreferredSpelling(key.tonic, key.mode);
+}
+
+function getPreferredSpelling(pitch: PitchClass, mode: DiatonicMode): PitchSpelling {
+  const spellings = SOLMIZATION_PITCH_SPELLINGS[pitch];
+
+  return [...spellings].sort((first, second) => {
+    const firstCost = getModeSpellingCost(first, mode);
+    const secondCost = getModeSpellingCost(second, mode);
+
+    if (firstCost !== secondCost) {
+      return firstCost - secondCost;
+    }
+
+    return getTieBreakScore(pitch, first) - getTieBreakScore(pitch, second);
+  })[0] as PitchSpelling;
+}
+
+function getAlternatePitchSpelling(
+  pitch: PitchClass,
+  primary: Pick<PitchSpelling, "label">,
+): string | null {
+  return (
+    SOLMIZATION_PITCH_SPELLINGS[pitch].find((spelling) => spelling.label !== primary.label)
+      ?.label ?? null
+  );
+}
+
+function getModeSpellingCost(tonic: PitchSpelling, mode: DiatonicMode): number {
+  const tonicLetterIndex = LETTER_ORDER.indexOf(tonic.letter);
+  const tonicPitchValue = getPitchSpellingValue(tonic);
+  const intervals = MODE_INTERVALS[mode];
+
+  return intervals.reduce((cost, interval, degreeIndex) => {
+    const letter = LETTER_ORDER[(tonicLetterIndex + degreeIndex) % LETTER_ORDER.length];
+
+    if (!letter) {
+      return cost;
+    }
+
+    const scalePitchValue = wrapSemitone(tonicPitchValue + interval);
+    const accidental = getRequiredAccidental(NATURAL_PITCH_VALUES[letter], scalePitchValue);
+    const accidentalSize = Math.abs(accidental);
+
+    return cost + accidentalSize + Math.max(0, accidentalSize - 1) * 4;
+  }, 0);
+}
+
+function getTieBreakScore(pitch: PitchClass, spelling: PitchSpelling): number {
+  const preferredAccidental = CANONICAL_TIE_ACCIDENTAL_BY_PITCH[pitch];
+
+  return preferredAccidental === spelling.accidental ? -1 : 0;
+}
+
+function getPitchSpellingValue(spelling: PitchSpelling): number {
+  return wrapSemitone(NATURAL_PITCH_VALUES[spelling.letter] + spelling.accidental);
+}
+
+function getRequiredAccidental(naturalPitchValue: number, targetPitchValue: number): number {
+  let accidental = targetPitchValue - naturalPitchValue;
+
+  if (accidental > 6) {
+    accidental -= 12;
+  } else if (accidental < -6) {
+    accidental += 12;
+  }
+
+  return accidental;
+}
+
 function getModalTransitionMode(mode: DiatonicMode): ModalTransitionMode {
   switch (mode) {
     case "dorian":
@@ -370,6 +506,10 @@ function getMidpointIndex(from: number, to: number): number {
 
 function wrapIndex(index: number): number {
   return (index + 12) % 12;
+}
+
+function wrapSemitone(value: number): number {
+  return (value + 12) % 12;
 }
 
 function circularIndexDistance(first: number, second: number): number {

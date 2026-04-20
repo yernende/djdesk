@@ -8,6 +8,7 @@ import {
   CIRCLE_OF_FIFTHS,
   describeKey,
   getCircleIndex,
+  getKeyTonicLabel,
   getModalPlacement,
   getPitchClassLabel,
   getTransitionProfile,
@@ -38,9 +39,24 @@ test("key descriptions include modal variants only when needed", () => {
 
 test("pitch labels use default solmization with unicode accidentals", () => {
   assert.equal(getPitchClassLabel("C#"), "Do♯ / Re♭");
+  assert.equal(getPitchClassLabel("D#"), "Mi♭ / Re♯");
   assert.equal(getPitchClassLabel("A"), "La");
   assert.equal(PITCH_CLASS_LABELS["F#"].primary, "Fa♯ m");
   assert.equal(PITCH_CLASS_LABELS["F#"].enharmonic, "Sol♭ m");
+  assert.equal(PITCH_CLASS_LABELS["A#"].primary, "Si♭ m");
+  assert.equal(PITCH_CLASS_LABELS["A#"].enharmonic, "La♯ m");
+});
+
+test("key tonic labels choose canonical enharmonic spelling by mode", () => {
+  assert.equal(getKeyTonicLabel({ tonic: "C#", mode: "major", variant: "diatonic" }), "Re♭ / Do♯");
+  assert.equal(
+    getKeyTonicLabel({ tonic: "C#", mode: "natural-minor", variant: "diatonic" }),
+    "Do♯ / Re♭",
+  );
+  assert.equal(
+    describeKey({ tonic: "A#", mode: "natural-minor", variant: "diatonic" }),
+    "Si♭ / La♯ Natural minor",
+  );
 });
 
 test("major keys share sections with their relative minors", () => {
@@ -184,6 +200,30 @@ test("home transitions allow only home-neighbor shortcuts", () => {
     canKeysTransition(
       { tonic: "A", mode: "natural-minor", variant: "diatonic" },
       { tonic: "E", mode: "phrygian", variant: "diatonic" },
+    ),
+    true,
+  );
+
+  assert.equal(
+    canKeysTransition(
+      { tonic: "F", mode: "natural-minor", variant: "diatonic" },
+      { tonic: "F", mode: "dorian", variant: "diatonic" },
+    ),
+    true,
+  );
+
+  assert.equal(
+    canKeysTransition(
+      { tonic: "F", mode: "natural-minor", variant: "diatonic" },
+      { tonic: "F", mode: "phrygian", variant: "diatonic" },
+    ),
+    true,
+  );
+
+  assert.equal(
+    canKeysTransition(
+      { tonic: "F", mode: "phrygian", variant: "diatonic" },
+      { tonic: "F", mode: "natural-minor", variant: "diatonic" },
     ),
     true,
   );

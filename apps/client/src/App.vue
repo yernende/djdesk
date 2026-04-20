@@ -5,8 +5,8 @@ import {
   areKeysTransitionCompatible,
   canKeysTransition,
   CIRCLE_OF_FIFTHS,
+  getKeyTonicLabel,
   getModeLabel,
-  getPitchClassLabel,
   getTransitionProfile,
   PITCH_CLASS_LABELS,
   type VerificationState,
@@ -850,7 +850,7 @@ function assertNever(value: never): never {
             <text y="-12" text-anchor="middle">
               {{
                 selectedTrack?.key
-                  ? getPitchClassLabel(selectedTrack.key.tonic)
+                  ? getKeyTonicLabel(selectedTrack.key)
                   : isUnknownKeyShelfSelected
                     ? "?"
                     : selectedLabel
@@ -921,8 +921,8 @@ function assertNever(value: never): never {
             <button
               type="button"
               class="add-button"
-              :class="{ risky: isAddTransitionRisky }"
-              :disabled="!selectedTrack || selectedTrackInDraft"
+              :class="{ risky: isAddTransitionRisky || selectedTrackInDraft }"
+              :disabled="!selectedTrack"
               @click="addSelectedTrack"
             >
               Add

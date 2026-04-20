@@ -233,7 +233,9 @@ h2 {
 
 .subsection.pure-modal.empty,
 .boundary-zone.empty {
+  cursor: default;
   fill: rgba(255, 250, 240, 0);
+  pointer-events: none;
   stroke: rgba(23, 27, 24, 0);
 }
 
