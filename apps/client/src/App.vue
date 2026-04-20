@@ -92,6 +92,27 @@ const selectedTrackInDraft = computed(() =>
   selectedTrack.value ? setDraft.value.includes(selectedTrack.value.id) : false,
 );
 
+const isAddTransitionRisky = computed(() => {
+  if (!selectedTrack.value || selectedTrackInDraft.value) {
+    return false;
+  }
+
+  const previousTrack = draftTracks.value.at(-1);
+
+  if (!previousTrack) {
+    return false;
+  }
+
+  const previousSection = getTrackSectionIndex(previousTrack);
+  const nextSection = getTrackSectionIndex(selectedTrack.value);
+
+  if (previousSection === null || nextSection === null) {
+    return true;
+  }
+
+  return circularDistance(previousSection, nextSection) > 1;
+});
+
 const visibleChordSegments = computed(() => trackHarmony.value?.chordSegments ?? []);
 
 const usedChordList = computed(
@@ -287,6 +308,14 @@ function trackTouchesSection(track: TrackView, sectionIndex: number): boolean {
   );
 }
 
+function getTrackSectionIndex(track: TrackView): number | null {
+  if (!track.placement) {
+    return null;
+  }
+
+  return Math.round(track.placement.displayIndex) % 12;
+}
+
 function circularDistance(first: number, second: number): number {
   const direct = Math.abs(first - second);
 
@@ -468,6 +497,7 @@ function confidenceLabel(state: VerificationState): string {
             <button
               type="button"
               class="add-button"
+              :class="{ risky: isAddTransitionRisky }"
               :disabled="!selectedTrack || selectedTrackInDraft"
               @click="addSelectedTrack"
             >

@@ -506,6 +506,10 @@ li {
   font-weight: 900;
 }
 
+.add-button.risky {
+  background: #9d3d2f;
+}
+
 .unknown-key-button {
   min-width: 48px;
   min-height: 38px;
