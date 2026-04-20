@@ -117,7 +117,7 @@ export async function registerRoutes(app: FastifyInstance, tracks: TrackReposito
     reply.header("Content-Type", contentType);
     reply.header(
       "Content-Disposition",
-      `inline; filename="${sanitizeHeaderFileName(basename(audioSource.audioPath))}"`,
+      getAudioContentDisposition(basename(audioSource.audioPath)),
     );
 
     if (!range) {
@@ -152,8 +152,30 @@ export async function registerRoutes(app: FastifyInstance, tracks: TrackReposito
   });
 }
 
-function sanitizeHeaderFileName(fileName: string): string {
-  return fileName.replace(/["\\\r\n]/g, "_");
+export function getAudioContentDisposition(fileName: string): string {
+  return [
+    `inline; filename="${toAsciiHeaderFileName(fileName)}"`,
+    `filename*=UTF-8''${encodeRfc5987Value(fileName)}`,
+  ].join("; ");
+}
+
+function toAsciiHeaderFileName(fileName: string): string {
+  const fallback = fileName
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    .replace(/[^\x20-\x7E]/g, "_")
+    .replace(/["\\;\r\n]/g, "_")
+    .replace(/_+/g, "_")
+    .trim();
+
+  return fallback || "audio";
+}
+
+function encodeRfc5987Value(value: string): string {
+  return encodeURIComponent(value).replace(
+    /['()*]/g,
+    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
 }
 
 function toTrackView(track: Track): TrackView {

@@ -16,6 +16,7 @@
     "db:migrate": "npm run db:migrate --workspace @djdesk/server",
     "audio:link": "npm --workspace @djdesk/server run audio:link --",
     "import:chordai": "npm --workspace @djdesk/server run import:chordai --",
+    "import:chordai:chords-only": "npm --workspace @djdesk/server run import:chordai:chords-only --",
     "import:rekordbox": "npm --workspace @djdesk/server run import:rekordbox --",
     "fmt": "oxfmt .",
     "fmt:check": "oxfmt . --check",
