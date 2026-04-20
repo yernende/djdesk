@@ -227,6 +227,22 @@ test("home transitions allow only home-neighbor shortcuts", () => {
     ),
     true,
   );
+
+  assert.equal(
+    canKeysTransition(
+      { tonic: "G#", mode: "natural-minor", variant: "diatonic" },
+      { tonic: "F#", mode: "major", variant: "diatonic" },
+    ),
+    true,
+  );
+
+  assert.equal(
+    canKeysTransition(
+      { tonic: "B", mode: "major", variant: "diatonic" },
+      { tonic: "F#", mode: "major", variant: "diatonic" },
+    ),
+    true,
+  );
 });
 
 test("pure modal transitions follow modal vectors", () => {

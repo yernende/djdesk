@@ -125,6 +125,7 @@ h2 {
 .wheel-panel {
   display: grid;
   place-items: center;
+  position: relative;
   background:
     radial-gradient(circle at 50% 50%, rgba(255, 250, 240, 0.96), rgba(222, 212, 195, 0.82)),
     #e8deca;
@@ -207,6 +208,7 @@ h2 {
 .boundary-zone {
   cursor: pointer;
   pointer-events: all;
+  stroke-linejoin: round;
   transition:
     fill 150ms ease,
     stroke 150ms ease,
@@ -268,6 +270,12 @@ h2 {
   stroke-width: 2.5;
 }
 
+.subsection.selected,
+.boundary-zone.selected {
+  stroke: #111411;
+  stroke-width: 4;
+}
+
 .zone-count {
   pointer-events: none;
   fill: #171b18;
@@ -297,6 +305,15 @@ h2 {
   font-size: 0.95rem;
   font-weight: 900;
   text-transform: uppercase;
+}
+
+.center-readout .readout-title {
+  font-size: 0.76rem;
+}
+
+.center-readout .readout-subtitle {
+  fill: #5e615d;
+  font-size: 0.66rem;
 }
 
 .set-chain,
@@ -381,7 +398,27 @@ h2 {
   color: #171b18;
 }
 
-ol {
+.sort-harmonic-button {
+  width: 100%;
+  min-height: 38px;
+  margin-bottom: 12px;
+  border: 1px solid rgba(23, 27, 24, 0.16);
+  border-radius: 8px;
+  background: #1c6f5d;
+  color: #fffaf0;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.sort-harmonic-button:disabled {
+  background: #c8c0b2;
+  color: #6d6960;
+  cursor: not-allowed;
+}
+
+.set-chain ol {
   display: grid;
   gap: 9px;
   min-height: 0;
@@ -391,10 +428,21 @@ ol {
   list-style: none;
 }
 
-li {
+.set-chain li {
   display: grid;
-  grid-template-columns: 1fr 34px;
+  align-items: stretch;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
+  border-radius: 10px;
+}
+
+.set-chain li.dragging {
+  opacity: 0.48;
+}
+
+.set-chain li.drag-over {
+  outline: 2px solid #171b18;
+  outline-offset: 2px;
 }
 
 .chain-track,
@@ -417,8 +465,19 @@ li {
 }
 
 .chain-track {
-  grid-template-columns: 28px 1fr;
+  grid-template-columns: 28px minmax(0, 1fr);
   column-gap: 10px;
+  row-gap: 4px;
+}
+
+.chain-track.non-harmonic {
+  border-color: #9d3d2f;
+  box-shadow: inset 0 0 0 2px rgba(157, 61, 47, 0.48);
+}
+
+.chain-track.non-harmonic .chain-index {
+  background: #9d3d2f;
+  color: #fffaf0;
 }
 
 .chain-index {
@@ -473,6 +532,18 @@ li {
   font-weight: 700;
 }
 
+.chain-transition-warning {
+  grid-column: 2;
+  justify-self: start;
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: rgba(157, 61, 47, 0.12);
+  color: #9d3d2f;
+  font-size: 0.66rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
 .track-row small {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -489,6 +560,32 @@ li {
   cursor: pointer;
   font-size: 1.2rem;
   font-weight: 900;
+}
+
+.chain-controls {
+  display: grid;
+  grid-template-columns: repeat(3, 30px);
+  gap: 4px;
+}
+
+.chain-controls .icon-button {
+  width: 30px;
+  min-height: 54px;
+  font-size: 0.96rem;
+}
+
+.chain-controls .move-button {
+  color: #171b18;
+}
+
+.chain-controls .remove-button {
+  color: #9d3d2f;
+}
+
+.chain-controls .icon-button:disabled {
+  color: #8f897e;
+  cursor: not-allowed;
+  opacity: 0.38;
 }
 
 .track-browser {
@@ -588,15 +685,15 @@ li {
 }
 
 .track-browser-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 8px;
+  display: grid;
+  align-content: center;
+  justify-items: end;
+  gap: 5px;
+  min-width: 184px;
 }
 
 .add-button {
-  min-width: 84px;
+  width: 112px;
   min-height: 38px;
   padding: 0 14px;
   background: #1c6f5d;
@@ -605,8 +702,25 @@ li {
   font-weight: 900;
 }
 
-.add-button.risky {
+.add-button.risky,
+.add-button.used {
   background: #9d3d2f;
+}
+
+.add-reason {
+  width: 184px;
+  min-height: 1.55rem;
+  color: #9d3d2f;
+  font-size: 0.72rem;
+  font-weight: 900;
+  line-height: 1.05;
+  text-align: right;
+  text-transform: uppercase;
+  visibility: hidden;
+}
+
+.add-reason.visible {
+  visibility: visible;
 }
 
 .unknown-key-button {
@@ -625,6 +739,14 @@ li {
 .unknown-key-button:hover {
   background: #171b18;
   color: #fffaf0;
+}
+
+.unknown-key-float {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 2;
+  box-shadow: 0 10px 22px rgba(23, 27, 24, 0.16);
 }
 
 .add-button:disabled {
@@ -840,5 +962,10 @@ dd {
 
   .wheel-panel {
     min-height: 420px;
+  }
+
+  .unknown-key-float {
+    right: 12px;
+    bottom: 12px;
   }
 }
