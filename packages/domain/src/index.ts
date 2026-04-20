@@ -9,6 +9,7 @@ export {
   getCircleIndex,
   getModeLabel,
   getModalPlacement,
+  getPitchClassLabel,
   getTransitionProfile,
   getVariantLabel,
   PITCH_CLASS_LABELS,

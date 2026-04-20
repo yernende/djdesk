@@ -9,7 +9,9 @@ import {
   describeKey,
   getCircleIndex,
   getModalPlacement,
+  getPitchClassLabel,
   getTransitionProfile,
+  PITCH_CLASS_LABELS,
   sampleTracks,
 } from "./index.ts";
 
@@ -30,8 +32,15 @@ test("tracks are bucketed by display section", () => {
 });
 
 test("key descriptions include modal variants only when needed", () => {
-  assert.equal(describeKey(sampleTracks[1].key), "D Dorian");
-  assert.equal(describeKey(sampleTracks[3].key), "G Natural minor, Raised leading tone");
+  assert.equal(describeKey(sampleTracks[1].key), "Re Dorian");
+  assert.equal(describeKey(sampleTracks[3].key), "Sol Natural minor, Raised leading tone");
+});
+
+test("pitch labels use default solmization with unicode accidentals", () => {
+  assert.equal(getPitchClassLabel("C#"), "Do♯ / Re♭");
+  assert.equal(getPitchClassLabel("A"), "La");
+  assert.equal(PITCH_CLASS_LABELS["F#"].primary, "Fa♯ m");
+  assert.equal(PITCH_CLASS_LABELS["F#"].enharmonic, "Sol♭ m");
 });
 
 test("major keys share sections with their relative minors", () => {

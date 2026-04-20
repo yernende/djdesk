@@ -5,6 +5,8 @@ import {
   areKeysTransitionCompatible,
   canKeysTransition,
   CIRCLE_OF_FIFTHS,
+  getModeLabel,
+  getPitchClassLabel,
   getTransitionProfile,
   PITCH_CLASS_LABELS,
   type VerificationState,
@@ -560,13 +562,13 @@ function getSelectedPositionLabel(): string {
   if (selectedBoundaryIndex.value !== null) {
     const before = Math.floor(selectedBoundaryIndex.value);
     const after = Math.ceil(selectedBoundaryIndex.value) % 12;
-    const beforeLabel = sections.value[before]?.label.primary ?? "";
-    const afterLabel = sections.value[after]?.label.primary ?? "";
+    const beforeLabel = getSectionDisplayLabel(before);
+    const afterLabel = getSectionDisplayLabel(after);
 
     return `${beforeLabel} / ${afterLabel} boundary`;
   }
 
-  const sectionLabel = sections.value[selectedSection.value]?.label.primary ?? "La m";
+  const sectionLabel = getSectionDisplayLabel(selectedSection.value);
 
   if (selectedSectionScope.value === "section") {
     return `${sectionLabel} section`;
@@ -582,6 +584,16 @@ function getSelectedPositionLabel(): string {
     default:
       return assertNever(selectedSlice.value);
   }
+}
+
+function getSectionDisplayLabel(index: number): string {
+  const label = sections.value[index]?.label;
+
+  if (!label) {
+    return "La m";
+  }
+
+  return label.enharmonic ? `${label.primary} / ${label.enharmonic}` : label.primary;
 }
 
 function isSubsectionActive(index: number, slice: SectionSlice): boolean {
@@ -836,10 +848,22 @@ function assertNever(value: never): never {
           <g class="center-readout">
             <circle r="76" />
             <text y="-12" text-anchor="middle">
-              {{ selectedTrack?.key?.tonic ?? (isUnknownKeyShelfSelected ? "?" : selectedLabel) }}
+              {{
+                selectedTrack?.key
+                  ? getPitchClassLabel(selectedTrack.key.tonic)
+                  : isUnknownKeyShelfSelected
+                    ? "?"
+                    : selectedLabel
+              }}
             </text>
             <text y="14" text-anchor="middle">
-              {{ selectedTrack?.key?.mode ?? (isUnknownKeyShelfSelected ? "unknown" : "section") }}
+              {{
+                selectedTrack?.key
+                  ? getModeLabel(selectedTrack.key.mode)
+                  : isUnknownKeyShelfSelected
+                    ? "unknown"
+                    : "section"
+              }}
             </text>
           </g>
         </svg>

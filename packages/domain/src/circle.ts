@@ -27,20 +27,35 @@ export const CIRCLE_OF_FIFTHS = [
   "D",
 ] as const satisfies readonly PitchClass[];
 
-export const PITCH_CLASS_LABELS: Record<PitchClass, PitchClassLabel> = {
-  C: { pitch: "C", primary: "Do m" },
-  G: { pitch: "G", primary: "Sol m" },
-  D: { pitch: "D", primary: "Re m" },
-  A: { pitch: "A", primary: "La m" },
-  E: { pitch: "E", primary: "Mi m" },
-  B: { pitch: "B", primary: "Si m" },
-  "F#": { pitch: "F#", primary: "Fa# m", enharmonic: "Solb m" },
-  "C#": { pitch: "C#", primary: "Do# m", enharmonic: "Reb m" },
-  "G#": { pitch: "G#", primary: "Sol# m", enharmonic: "Lab m" },
-  "D#": { pitch: "D#", primary: "Re# m", enharmonic: "Mib m" },
-  "A#": { pitch: "A#", primary: "La# m", enharmonic: "Sib m" },
-  F: { pitch: "F", primary: "Fa m" },
+const SOLMIZATION_PITCH_LABELS: Record<PitchClass, Omit<PitchClassLabel, "pitch">> = {
+  C: { primary: "Do" },
+  G: { primary: "Sol" },
+  D: { primary: "Re" },
+  A: { primary: "La" },
+  E: { primary: "Mi" },
+  B: { primary: "Si" },
+  "F#": { primary: "Fa♯", enharmonic: "Sol♭" },
+  "C#": { primary: "Do♯", enharmonic: "Re♭" },
+  "G#": { primary: "Sol♯", enharmonic: "La♭" },
+  "D#": { primary: "Re♯", enharmonic: "Mi♭" },
+  "A#": { primary: "La♯", enharmonic: "Si♭" },
+  F: { primary: "Fa" },
 };
+
+export const PITCH_CLASS_LABELS: Record<PitchClass, PitchClassLabel> = CIRCLE_OF_FIFTHS.reduce(
+  (labels, pitch) => {
+    const solmization = SOLMIZATION_PITCH_LABELS[pitch];
+
+    labels[pitch] = {
+      pitch,
+      primary: `${solmization.primary} m`,
+      ...(solmization.enharmonic ? { enharmonic: `${solmization.enharmonic} m` } : {}),
+    };
+
+    return labels;
+  },
+  {} as Record<PitchClass, PitchClassLabel>,
+);
 
 const PURE_MODAL_DISPLAY_OFFSET = 0.37;
 
@@ -82,6 +97,12 @@ export function getModeLabel(mode: DiatonicMode): string {
   }
 }
 
+export function getPitchClassLabel(pitch: PitchClass): string {
+  const label = SOLMIZATION_PITCH_LABELS[pitch];
+
+  return label.enharmonic ? `${label.primary} / ${label.enharmonic}` : label.primary;
+}
+
 export function describeKey(key: TrackKey | null): string {
   if (!key) {
     return "Unknown key";
@@ -89,7 +110,7 @@ export function describeKey(key: TrackKey | null): string {
 
   const variant = key.variant === "diatonic" ? "" : `, ${getVariantLabel(key.variant)}`;
 
-  return `${key.tonic} ${getModeLabel(key.mode)}${variant}`;
+  return `${getPitchClassLabel(key.tonic)} ${getModeLabel(key.mode)}${variant}`;
 }
 
 export function getVariantLabel(variant: ModalVariant): string {
