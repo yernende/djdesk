@@ -38,6 +38,16 @@ Use `DATABASE_PATH=/absolute/path/to/file.sqlite` to point the server or migrati
 at another database file. Use `SEED_SAMPLE_DATA=false` to start with an empty migrated
 database.
 
+## Import ChordAI reports
+
+```sh
+npm run import:chordai -- --reports "$HOME/Documents/ChordAI Pipeline Kit/reports" --remove-samples
+```
+
+The importer applies migrations, reads complete ChordAI report folders, upserts tracks,
+marks imported BPM/key/chords as estimated, and stores full chord segment and bar-grid
+data for later detailed views.
+
 ## Checks
 
 ```sh

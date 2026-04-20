@@ -7,7 +7,9 @@
     "build": "npm run typecheck",
     "db:migrate": "node src/db/migrate.ts",
     "dev": "npm run build --workspace @djdesk/domain && node --watch src/index.ts",
+    "import:chordai": "npm run build --workspace @djdesk/domain && node src/importers/chordai/cli.ts",
     "start": "node src/index.ts",
+    "test": "node --test src/importers/chordai/*.test.ts",
     "typecheck": "npm run build --workspace @djdesk/domain && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
