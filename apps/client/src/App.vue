@@ -255,15 +255,15 @@ function selectUnknownKeyTracks(): void {
 }
 
 function addSelectedTrack(): void {
-  if (!selectedTrack.value || selectedTrackInDraft.value) {
+  if (!selectedTrack.value) {
     return;
   }
 
   setDraft.value = [...setDraft.value, selectedTrack.value.id];
 }
 
-function removeFromDraft(id: string): void {
-  setDraft.value = setDraft.value.filter((trackId) => trackId !== id);
+function removeFromDraftAt(index: number): void {
+  setDraft.value = setDraft.value.filter((_, trackIndex) => trackIndex !== index);
 }
 
 function buildClockwiseDraft(sourceTracks: readonly TrackView[]): string[] {
@@ -875,7 +875,7 @@ function assertNever(value: never): never {
           <strong>{{ draftTracks.length }}</strong>
         </div>
         <ol>
-          <li v-for="(track, index) in draftTracks" :key="track.id">
+          <li v-for="(track, index) in draftTracks" :key="`${track.id}-${index}`">
             <button type="button" class="chain-track" @click="selectTrack(track)">
               <span class="chain-index">{{ index + 1 }}</span>
               <strong>
@@ -894,7 +894,7 @@ function assertNever(value: never): never {
               type="button"
               class="icon-button"
               title="Remove"
-              @click="removeFromDraft(track.id)"
+              @click="removeFromDraftAt(index)"
             >
               ×
             </button>
