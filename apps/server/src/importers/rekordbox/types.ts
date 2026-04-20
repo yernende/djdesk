@@ -9,9 +9,13 @@ export type RekordboxKeySource = "comments" | "key-column" | "missing";
 export interface RekordboxPlaylistEntry {
   artist: string | null;
   bpm: number;
+  comment: string | null;
   comments: string | null;
+  doesNotFit: boolean;
+  harmonyNotes: string | null;
   key: ImportedKey | null;
   keySource: RekordboxKeySource;
+  meter: string | null;
   playlistPosition: number;
   rawKey: string | null;
   sourceIdentity: string;

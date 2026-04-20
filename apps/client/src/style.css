@@ -222,29 +222,15 @@ h2 {
   fill: #d95f3d;
 }
 
-.track-cluster.has-harmony-notes circle {
-  stroke: #fffaf0;
-  stroke-width: 4;
-}
-
 .track-cluster.active circle,
 .track-cluster:hover circle {
   stroke-width: 4;
   transform: scale(1.08);
 }
 
-.track-cluster.has-harmony-notes.active circle,
-.track-cluster.has-harmony-notes:hover circle {
-  stroke-width: 5;
-}
-
-.cluster-count,
-.cluster-alert {
+.cluster-count {
   pointer-events: none;
   font-weight: 950;
-}
-
-.cluster-count {
   fill: #171b18;
   font-size: 0.82rem;
 }
@@ -252,14 +238,6 @@ h2 {
 .track-cluster.pure-modal .cluster-count,
 .track-cluster.modal-mixture .cluster-count {
   fill: #fffaf0;
-}
-
-.cluster-alert {
-  fill: #fffaf0;
-  paint-order: stroke;
-  stroke: #9d3d2f;
-  stroke-width: 4px;
-  font-size: 0.72rem;
 }
 
 .center-readout circle {

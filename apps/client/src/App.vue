@@ -18,7 +18,6 @@ import {
 interface TrackCluster {
   angleIndex: number;
   count: number;
-  hasHarmonyNotes: boolean;
   lane: ModalPlacementLane;
   radius: number;
   tracks: TrackView[];
@@ -83,10 +82,6 @@ const mixtureCount = computed(
   () => visibleTracks.value.filter((track) => track.placement?.lane === "modal-mixture").length,
 );
 
-const harmonyNoteCount = computed(
-  () => visibleTracks.value.filter((track) => hasHarmonyNotes(track)).length,
-);
-
 const draftTracks = computed(() =>
   setDraft.value
     .map((id) => tracks.value.find((track) => track.id === id))
@@ -139,7 +134,6 @@ const trackClusters = computed<TrackCluster[]>(() => {
     return {
       angleIndex: placement.displayIndex,
       count: group.length,
-      hasHarmonyNotes: group.some(hasHarmonyNotes),
       lane: placement.lane,
       radius: getClusterRadius(group.length),
       tracks: group,
@@ -352,10 +346,6 @@ function confidenceLabel(state: VerificationState): string {
           <strong>{{ mixtureCount }}</strong>
           mixed modes
         </span>
-        <span>
-          <strong>{{ harmonyNoteCount }}</strong>
-          harmony notes
-        </span>
       </div>
     </header>
 
@@ -402,7 +392,6 @@ function confidenceLabel(state: VerificationState): string {
               cluster.lane,
               {
                 active: cluster.tracks.some((track) => track.id === selectedTrack?.id),
-                'has-harmony-notes': cluster.hasHarmonyNotes,
               },
             ]"
             :transform="`translate(${cluster.x} ${cluster.y})`"
@@ -411,16 +400,6 @@ function confidenceLabel(state: VerificationState): string {
             <circle :r="cluster.radius" />
             <text class="cluster-count" text-anchor="middle" dominant-baseline="central">
               {{ cluster.count }}
-            </text>
-            <text
-              v-if="cluster.hasHarmonyNotes"
-              class="cluster-alert"
-              :x="cluster.radius - 1"
-              :y="-cluster.radius + 3"
-              text-anchor="middle"
-              dominant-baseline="central"
-            >
-              !
             </text>
             <title>{{ cluster.count }} tracks · {{ cluster.lane.replace("-", " ") }}</title>
           </g>

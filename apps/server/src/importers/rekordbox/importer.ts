@@ -173,6 +173,7 @@ function insertImportedTrack(database: DatabaseSync, record: RekordboxPlaylistEn
     mode: "major" as const,
     rawKey: "unknown",
     tonic: "C" as const,
+    variant: "diatonic" as const,
   };
 
   database
@@ -198,8 +199,9 @@ function insertImportedTrack(database: DatabaseSync, record: RekordboxPlaylistEn
           source_kind,
           source_identity,
           key_unknown,
+          does_not_fit,
           imported_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'diatonic', 'estimated', 'estimated', 'estimated', ?, NULL, NULL, ?, NULL, NULL, ?, ?, ?, datetime('now'))
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'estimated', 'estimated', 'estimated', ?, ?, NULL, ?, ?, NULL, ?, ?, ?, ?, datetime('now'))
       `,
     )
     .run(
@@ -209,11 +211,15 @@ function insertImportedTrack(database: DatabaseSync, record: RekordboxPlaylistEn
       record.bpm,
       key.tonic,
       key.mode,
-      record.comments,
+      key.variant,
+      record.harmonyNotes,
+      record.comment,
       record.key?.rawKey ?? null,
+      record.meter,
       rekordboxSourceKind,
       record.sourceIdentity,
       record.key ? 0 : 1,
+      record.doesNotFit ? 1 : 0,
     );
 }
 
@@ -236,10 +242,13 @@ function updateImportedTrack(
           bpm = CASE WHEN ? THEN ? ELSE bpm END,
           tonic = CASE WHEN ? THEN ? ELSE tonic END,
           mode = CASE WHEN ? THEN ? ELSE mode END,
-          modal_variant = CASE WHEN ? THEN 'diatonic' ELSE modal_variant END,
+          modal_variant = CASE WHEN ? THEN ? ELSE modal_variant END,
           key_unknown = CASE WHEN ? THEN 0 ELSE key_unknown END,
           harmony_notes = ?,
+          comment = ?,
           raw_key = ?,
+          meter = ?,
+          does_not_fit = ?,
           source_kind = ?,
           source_identity = ?,
           imported_at = datetime('now'),
@@ -257,9 +266,13 @@ function updateImportedTrack(
       flags.shouldUpdateKey ? 1 : 0,
       record.key?.mode ?? "major",
       flags.shouldUpdateKey ? 1 : 0,
+      record.key?.variant ?? "diatonic",
       flags.shouldUpdateKey ? 1 : 0,
-      record.comments,
+      record.harmonyNotes,
+      record.comment,
       record.key?.rawKey ?? null,
+      record.meter,
+      record.doesNotFit ? 1 : 0,
       rekordboxSourceKind,
       record.sourceIdentity,
       existing.id,

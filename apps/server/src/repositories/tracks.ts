@@ -174,6 +174,7 @@ export function createSqliteTrackRepository(database: DatabaseSync): TrackReposi
               comment,
               duration_seconds
             FROM tracks
+            WHERE does_not_fit = 0
             ORDER BY title COLLATE NOCASE
           `,
         )

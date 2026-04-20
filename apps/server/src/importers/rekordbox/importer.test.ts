@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { runMigrations } from "../../db/migrations.ts";
+import { createSqliteTrackRepository } from "../../repositories/tracks.ts";
 import { importRekordboxPlaylistIntoDatabase } from "./importer.ts";
 
 test("imports Rekordbox playlist rows and stays idempotent", async () => {
@@ -39,8 +40,10 @@ test("imports Rekordbox playlist rows and stays idempotent", async () => {
             bpm,
             tonic,
             mode,
+            modal_variant,
             raw_key,
             harmony_notes,
+            comment,
             key_confidence,
             bpm_confidence,
             source_kind
@@ -52,9 +55,11 @@ test("imports Rekordbox playlist rows and stays idempotent", async () => {
       artist: string;
       bpm: number;
       bpm_confidence: string;
-      harmony_notes: string;
+      comment: string | null;
+      harmony_notes: string | null;
       key_confidence: string;
       mode: string;
+      modal_variant: string;
       raw_key: string;
       source_kind: string;
       tonic: string;
@@ -64,8 +69,10 @@ test("imports Rekordbox playlist rows and stays idempotent", async () => {
     assert.equal(importedTrack.bpm, 94);
     assert.equal(importedTrack.tonic, "G#");
     assert.equal(importedTrack.mode, "natural-minor");
+    assert.equal(importedTrack.modal_variant, "raised-leading-tone");
     assert.equal(importedTrack.raw_key, "Abm");
-    assert.equal(importedTrack.harmony_notes, "Harm");
+    assert.equal(importedTrack.harmony_notes, null);
+    assert.equal(importedTrack.comment, null);
     assert.equal(importedTrack.key_confidence, "estimated");
     assert.equal(importedTrack.bpm_confidence, "estimated");
     assert.equal(importedTrack.source_kind, "rekordbox");
@@ -91,6 +98,23 @@ test("imports Rekordbox playlist rows and stays idempotent", async () => {
 
     assert.equal(unknownKeyTrack.key_unknown, 1);
     assert.equal(unknownKeyTrack.raw_key, null);
+
+    const hiddenTrack = database
+      .prepare("SELECT does_not_fit, harmony_notes FROM tracks WHERE title = 'Comment Key Song'")
+      .get() as {
+      does_not_fit: number;
+      harmony_notes: string | null;
+    };
+
+    assert.equal(hiddenTrack.does_not_fit, 1);
+    assert.equal(hiddenTrack.harmony_notes, null);
+
+    const visibleTracks = await createSqliteTrackRepository(database).listTracks();
+
+    assert.equal(
+      visibleTracks.some((track) => track.title === "Comment Key Song"),
+      false,
+    );
   } finally {
     database.close();
     await rm(fixture.rootPath, {
@@ -146,7 +170,8 @@ test("reimport preserves separately confirmed Rekordbox key and BPM", async () =
 
     const updated = database.prepare("SELECT * FROM tracks WHERE id = ?").get(track.id) as {
       bpm: number;
-      harmony_notes: string;
+      comment: string | null;
+      harmony_notes: string | null;
       raw_key: string;
       tonic: string;
     };
@@ -163,7 +188,8 @@ test("reimport preserves separately confirmed Rekordbox key and BPM", async () =
     assert.equal(updated.bpm, 77);
     assert.equal(updated.tonic, "F");
     assert.equal(updated.raw_key, "Dbm");
-    assert.equal(updated.harmony_notes, "Updated note");
+    assert.equal(updated.harmony_notes, null);
+    assert.equal(updated.comment, null);
     assert.equal(rawEntry.bpm, 130);
     assert.equal(rawEntry.parsed_key, "Dbm");
     assert.equal(rawEntry.comments, "Updated note");

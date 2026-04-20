@@ -10,21 +10,25 @@ test("normalizes ChordAI flat and minor keys for the circle UI", () => {
     mode: "major",
     rawKey: "Ab",
     tonic: "G#",
+    variant: "diatonic",
   });
   assert.deepEqual(parseChordAiKey("Ebm"), {
     mode: "natural-minor",
     rawKey: "Ebm",
     tonic: "D#",
+    variant: "diatonic",
   });
   assert.deepEqual(parseChordAiKey("F#m"), {
     mode: "natural-minor",
     rawKey: "F#m",
     tonic: "F#",
+    variant: "diatonic",
   });
   assert.deepEqual(parseChordAiKey("Am"), {
     mode: "natural-minor",
     rawKey: "Am",
     tonic: "A",
+    variant: "diatonic",
   });
 });
 

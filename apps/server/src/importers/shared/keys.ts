@@ -1,9 +1,10 @@
-import type { DiatonicMode, PitchClass } from "@djdesk/domain";
+import type { DiatonicMode, ModalVariant, PitchClass } from "@djdesk/domain";
 
 export interface ImportedKey {
   mode: DiatonicMode;
   rawKey: string;
   tonic: PitchClass;
+  variant: ModalVariant;
 }
 
 const flatToSharp = new Map<string, PitchClass>([
@@ -55,6 +56,7 @@ export function parseImportedKey(rawKey: string, sourceLabel: string): ImportedK
     mode: minorSuffix === "m" ? "natural-minor" : "major",
     rawKey: trimmed,
     tonic: normalizePitchClass(root, sourceLabel),
+    variant: "diatonic",
   };
 }
 

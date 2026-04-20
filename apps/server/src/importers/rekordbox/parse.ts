@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { TextDecoder } from "node:util";
 
 import { normalizeConfusableKeyText, parseImportedKey } from "../shared/keys.ts";
+import { analyzeRekordboxComment } from "./notes.ts";
 import type { RekordboxPlaylistEntry, RekordboxSkippedEntry } from "./types.ts";
 
 interface RawRekordboxRow {
@@ -158,33 +159,21 @@ function parseEntry(
   const keyText = rawKey ?? commentKey;
   const sourceIdentity = createRekordboxSourceIdentity(title, artist);
 
-  if (!keyText) {
-    return {
-      record: {
-        artist,
-        bpm,
-        comments,
-        key: null,
-        keySource: "missing",
-        playlistPosition,
-        rawKey: null,
-        sourceIdentity,
-        title,
-        trackId: `trk-rbx-${sourceIdentity.slice(0, 12)}`,
-      },
-    };
-  }
-
   try {
-    const key = parseImportedKey(keyText, "Rekordbox");
+    const baseKey = keyText ? parseImportedKey(keyText, "Rekordbox") : null;
+    const analysis = analyzeRekordboxComment(comments, baseKey);
 
     return {
       record: {
         artist,
         bpm,
+        comment: analysis.comment,
         comments,
-        key,
-        keySource: rawKey ? "key-column" : "comments",
+        doesNotFit: analysis.doesNotFit,
+        harmonyNotes: analysis.harmonyNotes,
+        key: analysis.key,
+        keySource: rawKey ? "key-column" : analysis.key ? "comments" : "missing",
+        meter: analysis.meter,
         playlistPosition,
         rawKey: rawKey ? normalizeConfusableKeyText(rawKey) : null,
         sourceIdentity,
