@@ -155,25 +155,6 @@ h2 {
   stroke: rgba(23, 27, 24, 0.42);
 }
 
-.orbit {
-  fill: none;
-  stroke: rgba(23, 27, 24, 0.22);
-  stroke-width: 2;
-}
-
-.orbit.collection {
-  stroke-dasharray: 10 7;
-}
-
-.orbit.bridge {
-  stroke: rgba(157, 61, 47, 0.48);
-  stroke-dasharray: 3 7;
-}
-
-.orbit.home {
-  stroke: rgba(28, 111, 93, 0.42);
-}
-
 .section-label {
   cursor: pointer;
 }

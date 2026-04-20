@@ -31,6 +31,7 @@ const isLoading = ref(true);
 const harmonyErrorMessage = ref("");
 const isHarmonyLoading = ref(false);
 const isUnknownKeyShelfSelected = ref(false);
+const selectedBoundaryIndex = ref<number | null>(null);
 const selectedSection = ref(3);
 const selectedTrack = ref<TrackView | null>(null);
 const setDraft = ref<string[]>([]);
@@ -55,21 +56,25 @@ const selectedSectionTracks = computed(() => {
     return unknownKeyTracks.value;
   }
 
+  if (selectedBoundaryIndex.value !== null) {
+    return tracks.value
+      .filter((track) => trackTouchesBoundary(track, selectedBoundaryIndex.value ?? 0))
+      .sort((first, second) => first.bpm - second.bpm);
+  }
+
   return tracks.value
     .filter((track) => trackTouchesSection(track, selectedSection.value))
     .sort((first, second) => first.bpm - second.bpm);
 });
 
-const selectedLabel = computed(() =>
-  isUnknownKeyShelfSelected.value
-    ? "Unknown key"
-    : (sections.value[selectedSection.value]?.label.primary ?? "Do"),
-);
+const selectedLabel = computed(() => getSelectedPositionLabel());
 
 const browserTitle = computed(() =>
   isUnknownKeyShelfSelected.value
     ? `${unknownKeyTracks.value.length} unplaced tracks`
-    : `${selectedSectionTracks.value.length} nearby tracks`,
+    : selectedBoundaryIndex.value !== null
+      ? `${selectedSectionTracks.value.length} boundary tracks`
+      : `${selectedSectionTracks.value.length} nearby tracks`,
 );
 
 const confirmedCount = computed(
@@ -173,6 +178,9 @@ onMounted(async () => {
     selectedSection.value = selectedTrack.value?.placement
       ? Math.round(selectedTrack.value.placement.displayIndex) % 12
       : 3;
+    selectedBoundaryIndex.value = selectedTrack.value?.placement
+      ? getBoundaryIndex(selectedTrack.value.placement)
+      : null;
     isUnknownKeyShelfSelected.value = Boolean(selectedTrack.value && !selectedTrack.value.key);
     setDraft.value = response.tracks.slice(0, 4).map((track) => track.id);
   } catch (error) {
@@ -210,6 +218,7 @@ watch(
 
 function selectSection(index: number): void {
   isUnknownKeyShelfSelected.value = false;
+  selectedBoundaryIndex.value = null;
   selectedSection.value = index;
   selectedTrack.value = selectedSectionTracks.value[0] ?? selectedTrack.value;
 }
@@ -219,20 +228,30 @@ function selectTrack(track: TrackView): void {
 
   if (track.placement) {
     isUnknownKeyShelfSelected.value = false;
+    selectedBoundaryIndex.value = getBoundaryIndex(track.placement);
     selectedSection.value = Math.round(track.placement.displayIndex) % 12;
   } else {
     isUnknownKeyShelfSelected.value = true;
+    selectedBoundaryIndex.value = null;
   }
 }
 
 function selectCluster(cluster: TrackCluster): void {
   isUnknownKeyShelfSelected.value = false;
+  selectedBoundaryIndex.value = getBoundaryIndex({
+    displayIndex: cluster.angleIndex,
+    homeIndex: Math.floor(cluster.angleIndex),
+    lane: cluster.lane,
+    summary: "",
+    targetIndex: Math.ceil(cluster.angleIndex) % 12,
+  });
   selectedSection.value = Math.round(cluster.angleIndex) % 12;
   selectedTrack.value = cluster.tracks[0] ?? selectedTrack.value;
 }
 
 function selectUnknownKeyTracks(): void {
   isUnknownKeyShelfSelected.value = true;
+  selectedBoundaryIndex.value = null;
   selectedTrack.value = unknownKeyTracks.value[0] ?? selectedTrack.value;
 }
 
@@ -278,13 +297,13 @@ function labelTransform(index: number, radius: number): string {
 function getLaneRadius(lane: ModalPlacementLane): number {
   switch (lane) {
     case "home":
-      return 154;
+      return 174;
     case "pure-modal":
-      return 190;
+      return 174;
     case "modal-mixture":
       return 174;
     default:
-      return 154;
+      return 174;
   }
 }
 
@@ -308,12 +327,64 @@ function trackTouchesSection(track: TrackView, sectionIndex: number): boolean {
   );
 }
 
+function trackTouchesBoundary(track: TrackView, boundaryIndex: number): boolean {
+  if (!track.placement) {
+    return false;
+  }
+
+  return Math.abs(track.placement.displayIndex - boundaryIndex) < 0.01;
+}
+
 function getTrackSectionIndex(track: TrackView): number | null {
   if (!track.placement) {
     return null;
   }
 
   return Math.round(track.placement.displayIndex) % 12;
+}
+
+function getBoundaryIndex(placement: TrackView["placement"]): number | null {
+  if (!placement || placement.lane !== "modal-mixture") {
+    return null;
+  }
+
+  const nearestHalf = Math.round(placement.displayIndex * 2) / 2;
+
+  return Math.abs(nearestHalf % 1) === 0.5 && Math.abs(placement.displayIndex - nearestHalf) < 0.01
+    ? nearestHalf
+    : null;
+}
+
+function getSelectedPositionLabel(): string {
+  if (isUnknownKeyShelfSelected.value) {
+    return "Unknown key";
+  }
+
+  if (selectedBoundaryIndex.value !== null) {
+    const before = Math.floor(selectedBoundaryIndex.value);
+    const after = Math.ceil(selectedBoundaryIndex.value) % 12;
+    const beforeLabel = sections.value[before]?.label.primary ?? "";
+    const afterLabel = sections.value[after]?.label.primary ?? "";
+
+    return `${beforeLabel} / ${afterLabel} boundary`;
+  }
+
+  return sections.value[selectedSection.value]?.label.primary ?? "Do";
+}
+
+function isSectionActive(index: number): boolean {
+  if (isUnknownKeyShelfSelected.value) {
+    return false;
+  }
+
+  if (selectedBoundaryIndex.value !== null) {
+    return (
+      index === Math.floor(selectedBoundaryIndex.value) ||
+      index === Math.ceil(selectedBoundaryIndex.value) % 12
+    );
+  }
+
+  return index === selectedSection.value;
 }
 
 function circularDistance(first: number, second: number): number {
@@ -389,21 +460,17 @@ function confidenceLabel(state: VerificationState): string {
               v-for="section in sections"
               :key="section.pitch"
               class="sector"
-              :class="{ active: !isUnknownKeyShelfSelected && section.index === selectedSection }"
+              :class="{ active: isSectionActive(section.index) }"
               :d="sectorPath(section.index)"
               @click="selectSection(section.index)"
             />
           </g>
 
-          <circle class="orbit collection" r="190" />
-          <circle class="orbit bridge" r="174" />
-          <circle class="orbit home" r="154" />
-
           <g
             v-for="section in sections"
             :key="`${section.pitch}-label`"
             class="section-label"
-            :class="{ active: !isUnknownKeyShelfSelected && section.index === selectedSection }"
+            :class="{ active: isSectionActive(section.index) }"
             :transform="labelTransform(section.index, 265)"
             @click="selectSection(section.index)"
           >

@@ -75,12 +75,12 @@ export function getVariantLabel(variant: ModalVariant): string {
 
 export function getModalPlacement(key: TrackKey): ModalPlacement {
   const homeIndex = getCircleIndex(key.tonic);
-  const targetIndex = getPureModalTargetIndex(key);
+  const collectionIndex = getPureModalCollectionIndex(key);
 
-  if (targetIndex === homeIndex) {
+  if (collectionIndex === homeIndex) {
     return {
       homeIndex,
-      targetIndex,
+      targetIndex: homeIndex,
       displayIndex: homeIndex,
       lane: key.variant === "raised-leading-tone" ? "modal-mixture" : "home",
       summary:
@@ -91,17 +91,17 @@ export function getModalPlacement(key: TrackKey): ModalPlacement {
   if (key.variant === "diatonic") {
     return {
       homeIndex,
-      targetIndex,
-      displayIndex: targetIndex,
+      targetIndex: homeIndex,
+      displayIndex: wrapIndex(homeIndex + getPureModalOffset(key.mode)),
       lane: "pure-modal",
-      summary: `Pure ${getModeLabel(key.mode)} collection`,
+      summary: `Pure ${getModeLabel(key.mode)} in home section`,
     };
   }
 
   return {
     homeIndex,
-    targetIndex,
-    displayIndex: getMidpointIndex(homeIndex, targetIndex),
+    targetIndex: collectionIndex,
+    displayIndex: getMidpointIndex(homeIndex, collectionIndex),
     lane: "modal-mixture",
     summary: `${getModeLabel(key.mode)} with modal mixture`,
   };
@@ -134,7 +134,7 @@ export function bucketTracksByTonic(tracks: readonly Track[]): CircleBucket[] {
   return buckets;
 }
 
-function getPureModalTargetIndex(key: TrackKey): number {
+function getPureModalCollectionIndex(key: TrackKey): number {
   const homeIndex = getCircleIndex(key.tonic);
 
   switch (key.mode) {
@@ -149,6 +149,22 @@ function getPureModalTargetIndex(key: TrackKey): number {
       return wrapIndex(homeIndex - 1);
     default:
       return assertNever(key.mode);
+  }
+}
+
+function getPureModalOffset(mode: DiatonicMode): number {
+  switch (mode) {
+    case "major":
+    case "natural-minor":
+      return 0;
+    case "dorian":
+    case "lydian":
+      return 0.18;
+    case "phrygian":
+    case "mixolydian":
+      return -0.18;
+    default:
+      return assertNever(mode);
   }
 }
 
