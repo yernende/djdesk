@@ -124,7 +124,8 @@ function upsertPlaylistEntry(
 ): void {
   const existing = findExistingTrack(database, record.sourceIdentity);
   const trackId = existing?.id ?? record.trackId;
-  const shouldUpdateKey = !existing || existing.keyConfidence === "estimated";
+  const shouldUpdateKey =
+    Boolean(record.key) && (!existing || existing.keyConfidence === "estimated");
   const shouldUpdateBpm = !existing || existing.bpmConfidence === "estimated";
 
   database.exec("BEGIN IMMEDIATE");
@@ -168,6 +169,12 @@ function findExistingTrack(
 }
 
 function insertImportedTrack(database: DatabaseSync, record: RekordboxPlaylistEntry): void {
+  const key = record.key ?? {
+    mode: "major" as const,
+    rawKey: "unknown",
+    tonic: "C" as const,
+  };
+
   database
     .prepare(
       `
@@ -190,8 +197,9 @@ function insertImportedTrack(database: DatabaseSync, record: RekordboxPlaylistEn
           bpm_std,
           source_kind,
           source_identity,
+          key_unknown,
           imported_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'diatonic', 'estimated', 'estimated', 'estimated', ?, NULL, NULL, ?, NULL, NULL, ?, ?, datetime('now'))
+        ) VALUES (?, ?, ?, ?, ?, ?, 'diatonic', 'estimated', 'estimated', 'estimated', ?, NULL, NULL, ?, NULL, NULL, ?, ?, ?, datetime('now'))
       `,
     )
     .run(
@@ -199,12 +207,13 @@ function insertImportedTrack(database: DatabaseSync, record: RekordboxPlaylistEn
       record.title,
       record.artist,
       record.bpm,
-      record.key.tonic,
-      record.key.mode,
+      key.tonic,
+      key.mode,
       record.comments,
-      record.key.rawKey,
+      record.key?.rawKey ?? null,
       rekordboxSourceKind,
       record.sourceIdentity,
+      record.key ? 0 : 1,
     );
 }
 
@@ -228,6 +237,7 @@ function updateImportedTrack(
           tonic = CASE WHEN ? THEN ? ELSE tonic END,
           mode = CASE WHEN ? THEN ? ELSE mode END,
           modal_variant = CASE WHEN ? THEN 'diatonic' ELSE modal_variant END,
+          key_unknown = CASE WHEN ? THEN 0 ELSE key_unknown END,
           harmony_notes = ?,
           raw_key = ?,
           source_kind = ?,
@@ -243,12 +253,13 @@ function updateImportedTrack(
       flags.shouldUpdateBpm ? 1 : 0,
       record.bpm,
       flags.shouldUpdateKey ? 1 : 0,
-      record.key.tonic,
+      record.key?.tonic ?? "C",
       flags.shouldUpdateKey ? 1 : 0,
-      record.key.mode,
+      record.key?.mode ?? "major",
+      flags.shouldUpdateKey ? 1 : 0,
       flags.shouldUpdateKey ? 1 : 0,
       record.comments,
-      record.key.rawKey,
+      record.key?.rawKey ?? null,
       rekordboxSourceKind,
       record.sourceIdentity,
       existing.id,
@@ -294,7 +305,7 @@ function replaceRawPlaylistEntry(
       record.artist,
       record.bpm,
       record.rawKey,
-      record.key.rawKey,
+      record.key?.rawKey ?? "unknown",
       record.keySource,
       record.comments,
     );

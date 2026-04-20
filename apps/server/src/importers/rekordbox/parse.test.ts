@@ -20,17 +20,17 @@ test("parses Rekordbox TSV range and normalizes keys", () => {
   );
 
   assert.equal(parsed.rowCount, 4);
-  assert.equal(parsed.records.length, 3);
-  assert.equal(parsed.skipped.length, 1);
-  assert.equal(parsed.records[0]?.key.tonic, "C#");
-  assert.equal(parsed.records[0]?.key.mode, "natural-minor");
+  assert.equal(parsed.records.length, 4);
+  assert.equal(parsed.skipped.length, 0);
+  assert.equal(parsed.records[0]?.key?.tonic, "C#");
+  assert.equal(parsed.records[0]?.key?.mode, "natural-minor");
   assert.equal(parsed.records[0]?.rawKey, "Dbm");
-  assert.equal(parsed.records[1]?.key.tonic, "C");
-  assert.equal(parsed.records[1]?.key.mode, "major");
+  assert.equal(parsed.records[1]?.key?.tonic, "C");
+  assert.equal(parsed.records[1]?.key?.mode, "major");
   assert.equal(parsed.records[1]?.rawKey, "C");
-  assert.equal(parsed.records[2]?.key.tonic, "A#");
+  assert.equal(parsed.records[2]?.key?.tonic, "A#");
   assert.equal(parsed.records[2]?.keySource, "comments");
   assert.equal(parsed.records[2]?.comments, "Bbm, no ne stroit");
-  assert.equal(parsed.skipped[0]?.playlistPosition, 4);
-  assert.equal(parsed.skipped[0]?.reason, "Missing key");
+  assert.equal(parsed.records[3]?.key, null);
+  assert.equal(parsed.records[3]?.keySource, "missing");
 });

@@ -50,7 +50,11 @@ export function getModeLabel(mode: DiatonicMode): string {
   }
 }
 
-export function describeKey(key: TrackKey): string {
+export function describeKey(key: TrackKey | null): string {
+  if (!key) {
+    return "Unknown key";
+  }
+
   const variant = key.variant === "diatonic" ? "" : `, ${getVariantLabel(key.variant)}`;
 
   return `${key.tonic} ${getModeLabel(key.mode)}${variant}`;
@@ -116,6 +120,10 @@ export function bucketTracksByTonic(tracks: readonly Track[]): CircleBucket[] {
   const buckets = createEmptyCircleBuckets();
 
   for (const track of tracks) {
+    if (!track.key) {
+      continue;
+    }
+
     const bucket = buckets[getCircleIndex(track.key.tonic)];
 
     if (bucket) {

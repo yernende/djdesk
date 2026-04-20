@@ -24,11 +24,11 @@ test("imports Rekordbox playlist rows and stays idempotent", async () => {
     });
 
     assert.equal(first.rowCount, 4);
-    assert.equal(first.importedCount, 3);
-    assert.equal(first.skipped.length, 1);
+    assert.equal(first.importedCount, 4);
+    assert.equal(first.skipped.length, 0);
     assert.equal(first.errors.length, 0);
-    assert.equal(countRows(database, "tracks"), 3);
-    assert.equal(countRows(database, "rekordbox_playlist_entries"), 3);
+    assert.equal(countRows(database, "tracks"), 4);
+    assert.equal(countRows(database, "rekordbox_playlist_entries"), 4);
 
     const importedTrack = database
       .prepare(
@@ -77,10 +77,20 @@ test("imports Rekordbox playlist rows and stays idempotent", async () => {
       toPosition: 4,
     });
 
-    assert.equal(second.importedCount, 3);
-    assert.equal(second.skipped.length, 1);
-    assert.equal(countRows(database, "tracks"), 3);
-    assert.equal(countRows(database, "rekordbox_playlist_entries"), 3);
+    assert.equal(second.importedCount, 4);
+    assert.equal(second.skipped.length, 0);
+    assert.equal(countRows(database, "tracks"), 4);
+    assert.equal(countRows(database, "rekordbox_playlist_entries"), 4);
+
+    const unknownKeyTrack = database
+      .prepare("SELECT key_unknown, raw_key FROM tracks WHERE title = 'Missing Key Song'")
+      .get() as {
+      key_unknown: number;
+      raw_key: string | null;
+    };
+
+    assert.equal(unknownKeyTrack.key_unknown, 1);
+    assert.equal(unknownKeyTrack.raw_key, null);
   } finally {
     database.close();
     await rm(fixture.rootPath, {

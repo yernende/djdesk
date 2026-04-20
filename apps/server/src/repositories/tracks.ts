@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 
-import { sampleTracks, type Track } from "@djdesk/domain";
+import { sampleTracks, type Track, type TrackKey } from "@djdesk/domain";
 
 export interface TrackRepository {
   getTrackHarmony(trackId: string): Promise<TrackHarmony | null>;
@@ -36,10 +36,11 @@ interface TrackRow {
   harmony_notes: string | null;
   id: string;
   key_confidence: Track["confidence"]["key"];
-  modal_variant: Track["key"]["variant"];
-  mode: Track["key"]["mode"];
+  key_unknown: 0 | 1;
+  modal_variant: TrackKey["variant"];
+  mode: TrackKey["mode"];
   title: string;
-  tonic: Track["key"]["tonic"];
+  tonic: TrackKey["tonic"];
 }
 
 interface ChordRow {
@@ -168,6 +169,7 @@ export function createSqliteTrackRepository(database: DatabaseSync): TrackReposi
               key_confidence,
               bpm_confidence,
               chords_confidence,
+              key_unknown,
               harmony_notes,
               comment,
               duration_seconds
@@ -319,6 +321,10 @@ export function seedTracksIfEmpty(
 
   try {
     for (const track of seed) {
+      if (!track.key) {
+        throw new Error(`Cannot seed track without key: ${track.id}`);
+      }
+
       insertTrack.run(
         track.id,
         track.title,
@@ -374,16 +380,21 @@ function toTrack(
   chords: ReadonlyMap<string, readonly string[]>,
   tags: ReadonlyMap<string, readonly string[]>,
 ): Track {
+  const key: TrackKey | null =
+    row.key_unknown === 1
+      ? null
+      : {
+          mode: row.mode,
+          tonic: row.tonic,
+          variant: row.modal_variant,
+        };
+
   return {
     id: row.id,
     title: row.title,
     ...(row.artist ? { artist: row.artist } : {}),
     bpm: row.bpm,
-    key: {
-      tonic: row.tonic,
-      mode: row.mode,
-      variant: row.modal_variant,
-    },
+    key,
     chordProgression: chords.get(row.id) ?? [],
     confidence: {
       bpm: row.bpm_confidence,

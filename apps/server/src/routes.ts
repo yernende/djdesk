@@ -45,7 +45,7 @@ interface TrackChordSegmentView {
 
 interface TrackView extends Track {
   keyLabel: string;
-  placement: ModalPlacement;
+  placement: ModalPlacement | null;
 }
 
 interface CircleBucketView extends Omit<CircleBucket, "tracks"> {
@@ -101,6 +101,6 @@ function toTrackView(track: Track): TrackView {
   return {
     ...track,
     keyLabel: describeKey(track.key),
-    placement: getModalPlacement(track.key),
+    placement: track.key ? getModalPlacement(track.key) : null,
   };
 }

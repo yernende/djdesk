@@ -156,20 +156,27 @@ function parseEntry(
   const rawKey = stringOrNull(row.key);
   const commentKey = rawKey ? null : extractKeyFromComments(comments);
   const keyText = rawKey ?? commentKey;
+  const sourceIdentity = createRekordboxSourceIdentity(title, artist);
 
   if (!keyText) {
     return {
-      skipped: {
+      record: {
+        artist,
+        bpm,
+        comments,
+        key: null,
+        keySource: "missing",
         playlistPosition,
-        reason: "Missing key",
+        rawKey: null,
+        sourceIdentity,
         title,
+        trackId: `trk-rbx-${sourceIdentity.slice(0, 12)}`,
       },
     };
   }
 
   try {
     const key = parseImportedKey(keyText, "Rekordbox");
-    const sourceIdentity = createRekordboxSourceIdentity(title, artist);
 
     return {
       record: {

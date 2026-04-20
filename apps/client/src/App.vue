@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 
-import { CIRCLE_OF_FIFTHS, PITCH_CLASS_LABELS } from "@djdesk/domain";
+import {
+  CIRCLE_OF_FIFTHS,
+  PITCH_CLASS_LABELS,
+  type ModalPlacementLane,
+  type VerificationState,
+} from "@djdesk/domain";
 
 import {
   fetchTrackHarmony,
@@ -14,7 +19,7 @@ interface TrackCluster {
   angleIndex: number;
   count: number;
   hasHarmonyNotes: boolean;
-  lane: TrackView["placement"]["lane"];
+  lane: ModalPlacementLane;
   radius: number;
   tracks: TrackView[];
   x: number;
@@ -26,6 +31,7 @@ const errorMessage = ref("");
 const isLoading = ref(true);
 const harmonyErrorMessage = ref("");
 const isHarmonyLoading = ref(false);
+const isUnknownKeyShelfSelected = ref(false);
 const selectedSection = ref(3);
 const selectedTrack = ref<TrackView | null>(null);
 const setDraft = ref<string[]>([]);
@@ -41,20 +47,40 @@ const sections = computed(() =>
 
 const visibleTracks = computed(() => tracks.value);
 
-const selectedSectionTracks = computed(() =>
-  tracks.value
-    .filter((track) => trackTouchesSection(track, selectedSection.value))
-    .sort((first, second) => first.bpm - second.bpm),
+const unknownKeyTracks = computed(() =>
+  tracks.value.filter((track) => !track.key).sort((first, second) => first.bpm - second.bpm),
 );
 
-const selectedLabel = computed(() => sections.value[selectedSection.value]?.label.primary ?? "Do");
+const selectedSectionTracks = computed(() => {
+  if (isUnknownKeyShelfSelected.value) {
+    return unknownKeyTracks.value;
+  }
+
+  return tracks.value
+    .filter((track) => trackTouchesSection(track, selectedSection.value))
+    .sort((first, second) => first.bpm - second.bpm);
+});
+
+const selectedLabel = computed(() =>
+  isUnknownKeyShelfSelected.value
+    ? "Unknown key"
+    : (sections.value[selectedSection.value]?.label.primary ?? "Do"),
+);
+
+const browserTitle = computed(() =>
+  isUnknownKeyShelfSelected.value
+    ? `${unknownKeyTracks.value.length} unplaced tracks`
+    : `${selectedSectionTracks.value.length} nearby tracks`,
+);
 
 const confirmedCount = computed(
   () => visibleTracks.value.filter((track) => track.confidence.key === "confirmed").length,
 );
 
+const unknownKeyCount = computed(() => unknownKeyTracks.value.length);
+
 const mixtureCount = computed(
-  () => visibleTracks.value.filter((track) => track.placement.lane === "modal-mixture").length,
+  () => visibleTracks.value.filter((track) => track.placement?.lane === "modal-mixture").length,
 );
 
 const harmonyNoteCount = computed(
@@ -81,6 +107,10 @@ const trackClusters = computed<TrackCluster[]>(() => {
   const grouped = new Map<string, TrackView[]>();
 
   for (const track of tracks.value) {
+    if (!track.placement) {
+      continue;
+    }
+
     const key = `${track.placement.lane}:${track.placement.displayIndex.toFixed(1)}`;
     const group = grouped.get(key);
 
@@ -98,16 +128,19 @@ const trackClusters = computed<TrackCluster[]>(() => {
       throw new Error("Unexpected empty cluster");
     }
 
-    const point = polarPoint(
-      firstTrack.placement.displayIndex,
-      getLaneRadius(firstTrack.placement.lane),
-    );
+    const placement = firstTrack.placement;
+
+    if (!placement) {
+      throw new Error("Unexpected unknown-key track in cluster");
+    }
+
+    const point = polarPoint(placement.displayIndex, getLaneRadius(placement.lane));
 
     return {
-      angleIndex: firstTrack.placement.displayIndex,
+      angleIndex: placement.displayIndex,
       count: group.length,
       hasHarmonyNotes: group.some(hasHarmonyNotes),
-      lane: firstTrack.placement.lane,
+      lane: placement.lane,
       radius: getClusterRadius(group.length),
       tracks: group,
       x: point.x,
@@ -122,9 +155,10 @@ onMounted(async () => {
 
     tracks.value = response.tracks;
     selectedTrack.value = response.tracks[0] ?? null;
-    selectedSection.value = selectedTrack.value
+    selectedSection.value = selectedTrack.value?.placement
       ? Math.round(selectedTrack.value.placement.displayIndex) % 12
       : 3;
+    isUnknownKeyShelfSelected.value = Boolean(selectedTrack.value && !selectedTrack.value.key);
     setDraft.value = response.tracks.slice(0, 4).map((track) => track.id);
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "Unknown API error";
@@ -160,18 +194,31 @@ watch(
 );
 
 function selectSection(index: number): void {
+  isUnknownKeyShelfSelected.value = false;
   selectedSection.value = index;
   selectedTrack.value = selectedSectionTracks.value[0] ?? selectedTrack.value;
 }
 
 function selectTrack(track: TrackView): void {
   selectedTrack.value = track;
-  selectedSection.value = Math.round(track.placement.displayIndex) % 12;
+
+  if (track.placement) {
+    isUnknownKeyShelfSelected.value = false;
+    selectedSection.value = Math.round(track.placement.displayIndex) % 12;
+  } else {
+    isUnknownKeyShelfSelected.value = true;
+  }
 }
 
 function selectCluster(cluster: TrackCluster): void {
+  isUnknownKeyShelfSelected.value = false;
   selectedSection.value = Math.round(cluster.angleIndex) % 12;
   selectedTrack.value = cluster.tracks[0] ?? selectedTrack.value;
+}
+
+function selectUnknownKeyTracks(): void {
+  isUnknownKeyShelfSelected.value = true;
+  selectedTrack.value = unknownKeyTracks.value[0] ?? selectedTrack.value;
 }
 
 function addSelectedTrack(): void {
@@ -213,7 +260,7 @@ function labelTransform(index: number, radius: number): string {
   return `translate(${point.x.toFixed(2)} ${point.y.toFixed(2)})`;
 }
 
-function getLaneRadius(lane: TrackView["placement"]["lane"]): number {
+function getLaneRadius(lane: ModalPlacementLane): number {
   switch (lane) {
     case "home":
       return 154;
@@ -235,6 +282,10 @@ function formatSeconds(value: number): string {
 }
 
 function trackTouchesSection(track: TrackView, sectionIndex: number): boolean {
+  if (!track.placement) {
+    return false;
+  }
+
   return (
     circularDistance(track.placement.displayIndex, sectionIndex) <= 0.55 ||
     track.placement.homeIndex === sectionIndex ||
@@ -262,6 +313,19 @@ function pointAt(angle: number, radius: number): { x: number; y: number } {
 function indexToAngle(index: number): number {
   return (index / 12) * Math.PI * 2 - Math.PI / 2;
 }
+
+function confidenceLabel(state: VerificationState): string {
+  switch (state) {
+    case "confirmed":
+      return "confirmed";
+    case "rejected":
+      return "rejected";
+    case "estimated":
+      return "estimated";
+    default:
+      return state;
+  }
+}
 </script>
 
 <template>
@@ -279,6 +343,10 @@ function indexToAngle(index: number): number {
         <span>
           <strong>{{ confirmedCount }}</strong>
           confirmed keys
+        </span>
+        <span>
+          <strong>{{ unknownKeyCount }}</strong>
+          unknown keys
         </span>
         <span>
           <strong>{{ mixtureCount }}</strong>
@@ -302,7 +370,7 @@ function indexToAngle(index: number): number {
               v-for="section in sections"
               :key="section.pitch"
               class="sector"
-              :class="{ active: section.index === selectedSection }"
+              :class="{ active: !isUnknownKeyShelfSelected && section.index === selectedSection }"
               :d="sectorPath(section.index)"
               @click="selectSection(section.index)"
             />
@@ -316,7 +384,7 @@ function indexToAngle(index: number): number {
             v-for="section in sections"
             :key="`${section.pitch}-label`"
             class="section-label"
-            :class="{ active: section.index === selectedSection }"
+            :class="{ active: !isUnknownKeyShelfSelected && section.index === selectedSection }"
             :transform="labelTransform(section.index, 265)"
             @click="selectSection(section.index)"
           >
@@ -360,10 +428,10 @@ function indexToAngle(index: number): number {
           <g class="center-readout">
             <circle r="76" />
             <text y="-12" text-anchor="middle">
-              {{ selectedTrack?.key.tonic ?? selectedLabel }}
+              {{ selectedTrack?.key?.tonic ?? (isUnknownKeyShelfSelected ? "?" : selectedLabel) }}
             </text>
             <text y="14" text-anchor="middle">
-              {{ selectedTrack?.key.mode ?? "section" }}
+              {{ selectedTrack?.key?.mode ?? (isUnknownKeyShelfSelected ? "unknown" : "section") }}
             </text>
           </g>
         </svg>
@@ -406,16 +474,27 @@ function indexToAngle(index: number): number {
         <div class="panel-heading">
           <div>
             <p class="eyebrow">{{ selectedLabel }} sector</p>
-            <h2>{{ selectedSectionTracks.length }} nearby tracks</h2>
+            <h2>{{ browserTitle }}</h2>
           </div>
-          <button
-            type="button"
-            class="add-button"
-            :disabled="!selectedTrack || selectedTrackInDraft"
-            @click="addSelectedTrack"
-          >
-            Add
-          </button>
+          <div class="track-browser-actions">
+            <button
+              v-if="unknownKeyCount > 0"
+              type="button"
+              class="unknown-key-button"
+              :class="{ active: isUnknownKeyShelfSelected }"
+              @click="selectUnknownKeyTracks"
+            >
+              ? {{ unknownKeyCount }}
+            </button>
+            <button
+              type="button"
+              class="add-button"
+              :disabled="!selectedTrack || selectedTrackInDraft"
+              @click="addSelectedTrack"
+            >
+              Add
+            </button>
+          </div>
         </div>
 
         <div class="browser-grid">
@@ -428,8 +507,14 @@ function indexToAngle(index: number): number {
             @click="selectTrack(track)"
           >
             <span class="row-badges">
-              <span class="mode-chip" :class="track.placement.lane">
-                {{ track.placement.lane.replace("-", " ") }}
+              <span class="mode-chip" :class="track.placement?.lane ?? 'unknown-key'">
+                {{ track.placement?.lane.replace("-", " ") ?? "unknown key" }}
+              </span>
+              <span class="confidence-badge" :class="track.confidence.key">
+                Key {{ confidenceLabel(track.confidence.key) }}
+              </span>
+              <span class="confidence-badge" :class="track.confidence.bpm">
+                BPM {{ confidenceLabel(track.confidence.bpm) }}
               </span>
               <span
                 v-if="hasHarmonyNotes(track)"
@@ -453,11 +538,25 @@ function indexToAngle(index: number): number {
           <dl>
             <div>
               <dt>Key</dt>
-              <dd>{{ selectedTrack.keyLabel }}</dd>
+              <dd class="value-with-badges">
+                {{ selectedTrack.keyLabel }}
+                <span class="confidence-badge" :class="selectedTrack.confidence.key">
+                  {{ confidenceLabel(selectedTrack.confidence.key) }}
+                </span>
+              </dd>
+            </div>
+            <div>
+              <dt>BPM</dt>
+              <dd class="value-with-badges">
+                {{ selectedTrack.bpm }}
+                <span class="confidence-badge" :class="selectedTrack.confidence.bpm">
+                  {{ confidenceLabel(selectedTrack.confidence.bpm) }}
+                </span>
+              </dd>
             </div>
             <div>
               <dt>Placement</dt>
-              <dd>{{ selectedTrack.placement.summary }}</dd>
+              <dd>{{ selectedTrack.placement?.summary ?? "Not placed on circle yet" }}</dd>
             </div>
             <div>
               <dt>Used chords</dt>

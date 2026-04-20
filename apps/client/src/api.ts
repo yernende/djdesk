@@ -2,7 +2,7 @@ import type { CircleBucket, ModalPlacement, Track } from "@djdesk/domain";
 
 export interface TrackView extends Track {
   keyLabel: string;
-  placement: ModalPlacement;
+  placement: ModalPlacement | null;
 }
 
 export interface CircleBucketView extends Omit<CircleBucket, "tracks"> {

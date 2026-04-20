@@ -4,13 +4,13 @@ import type { ImportedKey } from "../shared/keys.ts";
 
 export const rekordboxSourceKind = "rekordbox";
 
-export type RekordboxKeySource = "comments" | "key-column";
+export type RekordboxKeySource = "comments" | "key-column" | "missing";
 
 export interface RekordboxPlaylistEntry {
   artist: string | null;
   bpm: number;
   comments: string | null;
-  key: ImportedKey;
+  key: ImportedKey | null;
   keySource: RekordboxKeySource;
   playlistPosition: number;
   rawKey: string | null;

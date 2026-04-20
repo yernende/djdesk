@@ -429,6 +429,7 @@ li {
 .row-badges {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
 }
@@ -453,6 +454,42 @@ li {
   background: #f5c6b8;
 }
 
+.mode-chip.unknown-key {
+  background: #171b18;
+  color: #fffaf0;
+}
+
+.confidence-badge {
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px 7px;
+  border: 1px solid rgba(23, 27, 24, 0.12);
+  border-radius: 8px;
+  background: #f4c137;
+  color: #171b18;
+  font-size: 0.68rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.confidence-badge.confirmed {
+  background: #1c6f5d;
+  color: #fffaf0;
+}
+
+.confidence-badge.rejected {
+  background: #9d3d2f;
+  color: #fffaf0;
+}
+
+.track-browser-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .add-button {
   min-width: 84px;
   min-height: 38px;
@@ -461,6 +498,24 @@ li {
   color: #fffaf0;
   cursor: pointer;
   font-weight: 900;
+}
+
+.unknown-key-button {
+  min-width: 48px;
+  min-height: 38px;
+  padding: 0 11px;
+  border: 1px solid rgba(23, 27, 24, 0.22);
+  border-radius: 8px;
+  background: #fffaf0;
+  color: #171b18;
+  cursor: pointer;
+  font-weight: 950;
+}
+
+.unknown-key-button.active,
+.unknown-key-button:hover {
+  background: #171b18;
+  color: #fffaf0;
 }
 
 .add-button:disabled {
@@ -508,6 +563,13 @@ dd {
   margin: 0;
   font-weight: 780;
   line-height: 1.35;
+}
+
+.value-with-badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
 }
 
 .chord-chip-list {

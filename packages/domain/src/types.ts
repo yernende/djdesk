@@ -60,7 +60,7 @@ export interface Track {
   title: string;
   artist?: string;
   bpm: number;
-  key: TrackKey;
+  key: TrackKey | null;
   chordProgression: readonly string[];
   confidence: TrackAnalysisConfidence;
   harmonyNotes?: string;
