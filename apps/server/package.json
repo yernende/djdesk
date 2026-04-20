@@ -1,0 +1,17 @@
+{
+  "name": "@djdesk/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm run typecheck",
+    "dev": "npm run build --workspace @djdesk/domain && node --watch src/index.ts",
+    "start": "node src/index.ts",
+    "typecheck": "npm run build --workspace @djdesk/domain && tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@djdesk/domain": "0.1.0",
+    "@fastify/cors": "^11.2.0",
+    "fastify": "^5.8.5"
+  }
+}
