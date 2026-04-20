@@ -1,18 +1,46 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 
 import {
   areKeysTransitionCompatible,
   canKeysTransition,
   CIRCLE_OF_FIFTHS,
   getTransitionProfile,
+  describeKey,
+  getModalPlacement,
+  PITCH_CLASSES,
   PITCH_CLASS_LABELS,
+  sampleTracks,
+  type DiatonicMode,
+  type ModalVariant,
+  type PitchClass,
+  type TrackKey,
   type VerificationState,
 } from "@djdesk/domain";
 
 import {
+  cancelRetrievalJob,
+  createSet,
+  createTrack,
+  deleteSet,
+  fetchAudioLibrary,
+  fetchRetrievalJob,
+  fetchSets,
   fetchTrackHarmony,
   fetchTracks,
+  renameSet,
+  replaceSetTracks,
+  retryRetrievalJob,
+  selectSpotifyRetrievalCandidate,
+  selectYandexRetrievalCandidate,
+  startTrackRetrieval,
+  updateTrackAnalysis,
+  uploadTrackAudio,
+  type CreateTrackInput,
+  type RetrievalCandidateView,
+  type RetrievalJobView,
+  type SetDraftView,
+  type TrackAnalysisPatchInput,
   type TrackHarmonyResponse,
   type TrackView,
 } from "./api.ts";
@@ -23,10 +51,8 @@ type CompatibilityClass = "compatible" | "incompatible" | null;
 type MobilePanel = "focus" | "map" | "set" | "tracks";
 type PlacementLane = NonNullable<TrackView["placement"]>["lane"];
 
-interface DraftSet {
-  id: string;
-  name: string;
-  trackIds: string[];
+interface DraftSet extends SetDraftView {
+  isDemo?: boolean;
 }
 
 interface CenterReadout {
@@ -49,6 +75,25 @@ const PURE_ZONE_START = 0.25;
 const PURE_ZONE_END = 0.42;
 const BOUNDARY_ZONE_HALF_WIDTH = 0.07;
 const BPM_SCORE_HALF_LIFE = 0.06;
+const ENABLE_DEMO_DATA = import.meta.env.VITE_ENABLE_DEMO_DATA === "true";
+const MODE_OPTIONS = [
+  "major",
+  "natural-minor",
+  "dorian",
+  "phrygian",
+  "lydian",
+  "mixolydian",
+] as const satisfies readonly DiatonicMode[];
+const VARIANT_OPTIONS = [
+  "diatonic",
+  "raised-leading-tone",
+  "variable-degree",
+] as const satisfies readonly ModalVariant[];
+const VERIFICATION_OPTIONS = [
+  "estimated",
+  "confirmed",
+  "rejected",
+] as const satisfies readonly VerificationState[];
 
 const tracks = ref<TrackView[]>([]);
 const errorMessage = ref("");
@@ -62,12 +107,55 @@ const selectedSlice = ref<SectionSlice>("home");
 const selectedSectionScope = ref<SectionSelectionScope>("section");
 const selectedTrack = ref<TrackView | null>(null);
 const draftSets = ref<DraftSet[]>([]);
-const activeDraftSetId = ref("main");
+const activeDraftSetId = ref("");
 const trackHarmony = ref<TrackHarmonyResponse | null>(null);
 const draggedDraftIndex = ref<number | null>(null);
 const dragOverDraftIndex = ref<number | null>(null);
 const audioPlayer = ref<HTMLAudioElement | null>(null);
 const activeMobilePanel = ref<MobilePanel>("map");
+const setErrorMessage = ref("");
+const isSetSaving = ref(false);
+const newSetName = ref("");
+const renameSetName = ref("");
+const isTrackSaving = ref(false);
+const trackEditErrorMessage = ref("");
+const bpmDraft = ref("");
+const harmonyNotesDraft = ref("");
+const commentDraft = ref("");
+const chordsDraft = ref("");
+const tagsDraft = ref("");
+const isKeyUnknownDraft = ref(true);
+const isNewTrackDialogOpen = ref(false);
+const isCreatingTrack = ref(false);
+const createTrackErrorMessage = ref("");
+const newTrackAudioFile = ref<File | null>(null);
+const focusAudioFile = ref<File | null>(null);
+const isUploadingAudio = ref(false);
+const isBpmInputFocused = ref(false);
+const isKeyUnknownInputPending = ref(false);
+const audioUploadDir = ref("");
+const retrievalJob = ref<RetrievalJobView | null>(null);
+const retrievalInputDraft = ref("");
+const isRetrievalBusy = ref(false);
+const isRetrievalDialogOpen = ref(false);
+const retrievalErrorMessage = ref("");
+const openedLucidaUrl = ref("");
+let retrievalPollTimer: number | null = null;
+let trackPatchQueue = Promise.resolve();
+const newTrackForm = ref({
+  artist: "",
+  bpm: "",
+  chords: "",
+  comment: "",
+  harmonyNotes: "",
+  isKeyUnknown: true,
+  keyMode: "natural-minor" as DiatonicMode,
+  keyTonic: "A" as PitchClass,
+  keyVariant: "diatonic" as ModalVariant,
+  shouldRetrieveAudio: false,
+  tags: "",
+  title: "",
+});
 
 const sections = computed(() =>
   CIRCLE_OF_FIFTHS.map((pitch, index) => ({
@@ -80,7 +168,7 @@ const sections = computed(() =>
 const visibleTracks = computed(() => tracks.value);
 
 const unknownKeyTracks = computed(() =>
-  tracks.value.filter((track) => !track.key).sort((first, second) => first.bpm - second.bpm),
+  tracks.value.filter((track) => !track.key).sort(compareNullableBpmThenTitle),
 );
 
 const selectedSectionTracks = computed(() => {
@@ -163,6 +251,10 @@ const isAddTransitionRisky = computed(() => {
 const addButtonLabel = computed(() => (selectedTrackInAnyDraftSet.value ? "Add again" : "Add"));
 
 const addButtonTitle = computed(() => {
+  if (!activeDraftSet.value) {
+    return "Create a set before adding tracks";
+  }
+
   if (isAddTransitionRisky.value) {
     return "Non-harmonic transition";
   }
@@ -240,10 +332,18 @@ const mobileTabs = computed(() => [
 
 onMounted(async () => {
   try {
-    const response = await fetchTracks();
+    const [trackResponse, setResponse, audioLibraryResponse] = await Promise.all([
+      fetchTracks(),
+      fetchSets(),
+      fetchAudioLibrary(),
+    ]);
+    const loadedTracks = ENABLE_DEMO_DATA
+      ? [...trackResponse.tracks, ...buildDemoTrackViews()]
+      : trackResponse.tracks;
 
-    tracks.value = response.tracks;
-    selectedTrack.value = response.tracks[0] ?? null;
+    audioUploadDir.value = audioLibraryResponse.audioUploadDir;
+    tracks.value = loadedTracks;
+    selectedTrack.value = loadedTracks[0] ?? null;
     selectedSection.value = selectedTrack.value?.placement
       ? Math.round(selectedTrack.value.placement.displayIndex) % 12
       : DEFAULT_DRAFT_START_SECTION;
@@ -252,13 +352,20 @@ onMounted(async () => {
       : null;
     selectedSlice.value = selectedTrack.value ? getTrackSectionSlice(selectedTrack.value) : "home";
     isUnknownKeyShelfSelected.value = Boolean(selectedTrack.value && !selectedTrack.value.key);
-    draftSets.value = buildMockDraftSets(response.tracks);
-    activeDraftSetId.value = draftSets.value[0]?.id ?? "main";
+    draftSets.value = ENABLE_DEMO_DATA
+      ? [...setResponse.sets, ...buildMockDraftSets(loadedTracks)]
+      : [...setResponse.sets];
+    activeDraftSetId.value = draftSets.value[0]?.id ?? "";
+    renameSetName.value = activeDraftSet.value?.name ?? "";
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "Unknown API error";
   } finally {
     isLoading.value = false;
   }
+});
+
+onUnmounted(() => {
+  clearRetrievalPolling();
 });
 
 watch(
@@ -303,6 +410,45 @@ watch(
   },
   {
     flush: "sync",
+  },
+);
+
+watch(
+  selectedTrack,
+  (track) => {
+    if (!isBpmInputFocused.value) {
+      bpmDraft.value = track?.bpm ? String(track.bpm) : "";
+    }
+
+    harmonyNotesDraft.value = track?.harmonyNotes ?? "";
+    commentDraft.value = track?.comment ?? "";
+    chordsDraft.value = track?.chordProgression.join(", ") ?? "";
+    tagsDraft.value = track?.tags.join(", ") ?? "";
+    if (!isKeyUnknownInputPending.value) {
+      isKeyUnknownDraft.value = !track?.key;
+    }
+
+    retrievalInputDraft.value = track ? getDefaultRetrievalInput(track) : "";
+    if (track && retrievalJob.value?.trackId !== track.id) {
+      retrievalJob.value = null;
+      retrievalErrorMessage.value = "";
+    }
+
+    focusAudioFile.value = null;
+    trackEditErrorMessage.value = "";
+  },
+  {
+    immediate: true,
+  },
+);
+
+watch(
+  activeDraftSet,
+  (setDraft) => {
+    renameSetName.value = setDraft?.name ?? "";
+  },
+  {
+    immediate: true,
   },
 );
 
@@ -397,25 +543,106 @@ function selectDraftSet(id: string): void {
   activeDraftSetId.value = id;
 }
 
-function addSelectedTrack(): void {
+async function createDraftSetFromInput(): Promise<void> {
+  const name = newSetName.value.trim();
+
+  if (!name) {
+    setErrorMessage.value = "Set name is required";
+    return;
+  }
+
+  setErrorMessage.value = "";
+  isSetSaving.value = true;
+
+  try {
+    const setDraft = await createSet(name);
+
+    draftSets.value = [...draftSets.value, setDraft];
+    activeDraftSetId.value = setDraft.id;
+    newSetName.value = "";
+  } catch (error) {
+    setErrorMessage.value = error instanceof Error ? error.message : "Could not create set";
+  } finally {
+    isSetSaving.value = false;
+  }
+}
+
+async function saveActiveSetName(): Promise<void> {
+  const activeSet = activeDraftSet.value;
+  const name = renameSetName.value.trim();
+
+  if (!activeSet || activeSet.isDemo || name === activeSet.name) {
+    return;
+  }
+
+  if (!name) {
+    setErrorMessage.value = "Set name is required";
+    renameSetName.value = activeSet.name;
+    return;
+  }
+
+  setErrorMessage.value = "";
+  isSetSaving.value = true;
+
+  try {
+    const updated = await renameSet(activeSet.id, name);
+
+    replaceDraftSet(updated);
+  } catch (error) {
+    setErrorMessage.value = error instanceof Error ? error.message : "Could not rename set";
+    renameSetName.value = activeSet.name;
+  } finally {
+    isSetSaving.value = false;
+  }
+}
+
+async function deleteActiveSet(): Promise<void> {
+  const activeSet = activeDraftSet.value;
+
+  if (!activeSet) {
+    return;
+  }
+
+  if (!window.confirm(`Delete set "${activeSet.name}"?`)) {
+    return;
+  }
+
+  setErrorMessage.value = "";
+  isSetSaving.value = true;
+
+  try {
+    if (!activeSet.isDemo) {
+      await deleteSet(activeSet.id);
+    }
+
+    draftSets.value = draftSets.value.filter((setDraft) => setDraft.id !== activeSet.id);
+    activeDraftSetId.value = draftSets.value[0]?.id ?? "";
+  } catch (error) {
+    setErrorMessage.value = error instanceof Error ? error.message : "Could not delete set";
+  } finally {
+    isSetSaving.value = false;
+  }
+}
+
+async function addSelectedTrack(): Promise<void> {
   if (!selectedTrack.value || !activeDraftSet.value) {
     return;
   }
 
-  updateActiveDraftTrackIds([...activeDraftTrackIds.value, selectedTrack.value.id]);
+  await updateActiveDraftTrackIds([...activeDraftTrackIds.value, selectedTrack.value.id]);
 }
 
-function removeFromDraftAt(index: number): void {
-  updateActiveDraftTrackIds(
+async function removeFromDraftAt(index: number): Promise<void> {
+  await updateActiveDraftTrackIds(
     activeDraftTrackIds.value.filter((_, trackIndex) => trackIndex !== index),
   );
 }
 
-function moveDraftTrack(index: number, direction: -1 | 1): void {
-  reorderDraftTrack(index, index + direction);
+async function moveDraftTrack(index: number, direction: -1 | 1): Promise<void> {
+  await reorderDraftTrack(index, index + direction);
 }
 
-function reorderDraftTrack(fromIndex: number, toIndex: number): void {
+async function reorderDraftTrack(fromIndex: number, toIndex: number): Promise<void> {
   if (
     fromIndex === toIndex ||
     fromIndex < 0 ||
@@ -434,10 +661,10 @@ function reorderDraftTrack(fromIndex: number, toIndex: number): void {
   }
 
   trackIds.splice(toIndex, 0, trackId);
-  updateActiveDraftTrackIds(trackIds);
+  await updateActiveDraftTrackIds(trackIds);
 }
 
-function sortActiveDraftHarmonically(): void {
+async function sortActiveDraftHarmonically(): Promise<void> {
   const items = activeDraftTrackIds.value.map((trackId, originalIndex) => ({
     originalIndex,
     track: tracks.value.find((track) => track.id === trackId) ?? null,
@@ -449,7 +676,7 @@ function sortActiveDraftHarmonically(): void {
   }
 
   const sortedItems = sortDraftItemsHarmonically(items);
-  updateActiveDraftTrackIds(sortedItems.map((item) => item.trackId));
+  await updateActiveDraftTrackIds(sortedItems.map((item) => item.trackId));
 }
 
 function sortDraftItemsHarmonically(items: readonly DraftSortItem[]): DraftSortItem[] {
@@ -542,6 +769,10 @@ function getDraftTransitionScore(previous: DraftSortItem, next: DraftSortItem): 
 }
 
 function getBpmDistance(previous: TrackView, next: TrackView): number {
+  if (previous.bpm === null || next.bpm === null) {
+    return 1;
+  }
+
   return Math.min(Math.abs(previous.bpm - next.bpm), 40) / 40;
 }
 
@@ -582,7 +813,7 @@ function dropDraftTrack(event: DragEvent, index: number): void {
   const fromIndex = draggedDraftIndex.value ?? parsedIndex;
 
   if (Number.isInteger(fromIndex)) {
-    reorderDraftTrack(fromIndex, index);
+    void reorderDraftTrack(fromIndex, index);
   }
 
   endDraftDrag();
@@ -593,37 +824,636 @@ function endDraftDrag(): void {
   dragOverDraftIndex.value = null;
 }
 
-function updateActiveDraftTrackIds(trackIds: string[]): void {
+async function updateActiveDraftTrackIds(trackIds: string[]): Promise<void> {
   const activeSetId = activeDraftSet.value?.id;
 
   if (!activeSetId) {
     return;
   }
 
-  draftSets.value = draftSets.value.map((draftSet) =>
-    draftSet.id === activeSetId
+  const previousDraftSets = draftSets.value;
+  const activeSet = activeDraftSet.value;
+  const optimisticSet = activeSet
+    ? {
+        ...activeSet,
+        trackIds,
+      }
+    : null;
+
+  if (!optimisticSet) {
+    return;
+  }
+
+  replaceDraftSet(optimisticSet);
+  setErrorMessage.value = "";
+
+  if (activeSet.isDemo) {
+    return;
+  }
+
+  isSetSaving.value = true;
+
+  try {
+    const persistedSet = await replaceSetTracks(activeSetId, trackIds);
+
+    replaceDraftSet(persistedSet);
+  } catch (error) {
+    draftSets.value = previousDraftSets;
+    setErrorMessage.value = error instanceof Error ? error.message : "Could not save set";
+  } finally {
+    isSetSaving.value = false;
+  }
+}
+
+function replaceDraftSet(setDraft: DraftSet): void {
+  draftSets.value = draftSets.value.map((candidate) =>
+    candidate.id === setDraft.id
       ? {
-          ...draftSet,
-          trackIds,
+          ...candidate,
+          ...setDraft,
         }
-      : draftSet,
+      : candidate,
   );
+}
+
+async function patchSelectedTrack(input: TrackAnalysisPatchInput): Promise<boolean> {
+  const track = selectedTrack.value;
+
+  if (!track) {
+    return false;
+  }
+
+  const operation = trackPatchQueue.then(() => patchTrackAnalysis(track.id, input));
+
+  trackPatchQueue = operation.then(
+    () => undefined,
+    () => undefined,
+  );
+
+  return operation;
+}
+
+async function patchTrackAnalysis(
+  trackId: string,
+  input: TrackAnalysisPatchInput,
+): Promise<boolean> {
+  trackEditErrorMessage.value = "";
+  isTrackSaving.value = true;
+
+  try {
+    const updatedTrack = await updateTrackAnalysis(trackId, input);
+
+    updateTrackInState(updatedTrack);
+
+    if (selectedTrack.value?.id === trackId) {
+      selectedTrack.value = updatedTrack;
+      syncSelectionToTrack(updatedTrack);
+    }
+
+    return true;
+  } catch (error) {
+    trackEditErrorMessage.value =
+      error instanceof Error ? error.message : "Could not save track changes";
+    return false;
+  } finally {
+    isTrackSaving.value = false;
+  }
+}
+
+async function saveBpmDraft(value = bpmDraft.value): Promise<void> {
+  let nextBpm: number | null;
+
+  try {
+    nextBpm = parseOptionalNumberInput(value);
+  } catch (error) {
+    trackEditErrorMessage.value = error instanceof Error ? error.message : "Invalid BPM";
+    return;
+  }
+
+  if (selectedTrack.value?.bpm === nextBpm) {
+    return;
+  }
+
+  await patchSelectedTrack({
+    bpm: nextBpm,
+  });
+}
+
+async function saveBpmDraftFromEvent(event: Event): Promise<void> {
+  const value = getValueFromEvent(event);
+
+  bpmDraft.value = value;
+  await saveBpmDraft(value);
+}
+
+function focusBpmDraft(): void {
+  isBpmInputFocused.value = true;
+}
+
+async function blurBpmDraft(event: Event): Promise<void> {
+  isBpmInputFocused.value = false;
+  await saveBpmDraftFromEvent(event);
+}
+
+async function updateSelectedKeyUnknown(event: Event): Promise<void> {
+  const checked = getCheckedFromEvent(event);
+
+  isKeyUnknownDraft.value = checked;
+  isKeyUnknownInputPending.value = true;
+
+  const wasSaved = await patchSelectedTrack({
+    confidence: {
+      key: checked ? "estimated" : "confirmed",
+    },
+    key: checked ? null : getSelectedKeyOrDefault(),
+  });
+
+  if (!wasSaved) {
+    isKeyUnknownDraft.value = !selectedTrack.value?.key;
+  }
+
+  isKeyUnknownInputPending.value = false;
+}
+
+async function updateSelectedKeyTonic(event: Event): Promise<void> {
+  await patchSelectedTrack({
+    key: {
+      ...getSelectedKeyOrDefault(),
+      tonic: getValueFromEvent(event) as PitchClass,
+    },
+  });
+}
+
+async function updateSelectedKeyMode(event: Event): Promise<void> {
+  await patchSelectedTrack({
+    key: {
+      ...getSelectedKeyOrDefault(),
+      mode: getValueFromEvent(event) as DiatonicMode,
+    },
+  });
+}
+
+async function updateSelectedKeyVariant(event: Event): Promise<void> {
+  await patchSelectedTrack({
+    key: {
+      ...getSelectedKeyOrDefault(),
+      variant: getValueFromEvent(event) as ModalVariant,
+    },
+  });
+}
+
+async function updateSelectedConfidence(field: "bpm" | "key", event: Event): Promise<void> {
+  await patchSelectedTrack({
+    confidence: {
+      [field]: getValueFromEvent(event) as VerificationState,
+    },
+  });
+}
+
+async function saveHarmonyNotesDraft(): Promise<void> {
+  await patchSelectedTrack({
+    harmonyNotes: harmonyNotesDraft.value,
+  });
+}
+
+async function saveCommentDraft(): Promise<void> {
+  await patchSelectedTrack({
+    comment: commentDraft.value,
+  });
+}
+
+async function saveChordsDraft(): Promise<void> {
+  await patchSelectedTrack({
+    chords: parseDelimitedText(chordsDraft.value),
+  });
+}
+
+async function saveTagsDraft(): Promise<void> {
+  await patchSelectedTrack({
+    tags: parseDelimitedText(tagsDraft.value),
+  });
+}
+
+function openNewTrackDialog(): void {
+  createTrackErrorMessage.value = "";
+  newTrackAudioFile.value = null;
+  newTrackForm.value = {
+    artist: "",
+    bpm: "",
+    chords: "",
+    comment: "",
+    harmonyNotes: "",
+    isKeyUnknown: true,
+    keyMode: "natural-minor",
+    keyTonic: "A",
+    keyVariant: "diatonic",
+    shouldRetrieveAudio: false,
+    tags: "",
+    title: "",
+  };
+  isNewTrackDialogOpen.value = true;
+}
+
+function closeNewTrackDialog(): void {
+  if (!isCreatingTrack.value) {
+    isNewTrackDialogOpen.value = false;
+  }
+}
+
+function setNewTrackAudioFile(event: Event): void {
+  newTrackAudioFile.value = getFileFromEvent(event);
+}
+
+async function submitNewTrack(): Promise<void> {
+  const title = newTrackForm.value.title.trim();
+
+  if (!title) {
+    createTrackErrorMessage.value = "Track title is required";
+    return;
+  }
+
+  createTrackErrorMessage.value = "";
+  isCreatingTrack.value = true;
+
+  try {
+    const input: CreateTrackInput = {
+      title,
+    };
+    const artist = newTrackForm.value.artist.trim();
+    const harmonyNotes = newTrackForm.value.harmonyNotes.trim();
+    const comment = newTrackForm.value.comment.trim();
+    const bpm = parseOptionalNumberInput(newTrackForm.value.bpm);
+    const chords = parseDelimitedText(newTrackForm.value.chords);
+    const tags = parseDelimitedText(newTrackForm.value.tags);
+    const shouldRetrieveAudio = newTrackForm.value.shouldRetrieveAudio;
+
+    if (artist) {
+      input.artist = artist;
+    }
+
+    if (bpm !== null) {
+      input.bpm = bpm;
+    }
+
+    if (!newTrackForm.value.isKeyUnknown) {
+      input.key = {
+        mode: newTrackForm.value.keyMode,
+        tonic: newTrackForm.value.keyTonic,
+        variant: newTrackForm.value.keyVariant,
+      };
+    }
+
+    if (harmonyNotes) {
+      input.harmonyNotes = harmonyNotes;
+    }
+
+    if (comment) {
+      input.comment = comment;
+    }
+
+    if (chords.length > 0) {
+      input.chords = chords;
+    }
+
+    if (tags.length > 0) {
+      input.tags = tags;
+    }
+
+    let createdTrack = await createTrack(input);
+
+    tracks.value = [...tracks.value, createdTrack].sort((first, second) =>
+      first.title.localeCompare(second.title),
+    );
+
+    if (newTrackAudioFile.value) {
+      createdTrack = await uploadTrackAudio(createdTrack.id, newTrackAudioFile.value);
+      updateTrackInState(createdTrack);
+    }
+
+    selectTrack(createdTrack);
+    isNewTrackDialogOpen.value = false;
+
+    if (shouldRetrieveAudio) {
+      await startRetrievalForTrack(createdTrack, getDefaultRetrievalInput(createdTrack));
+    }
+  } catch (error) {
+    createTrackErrorMessage.value =
+      error instanceof Error ? error.message : "Could not create track";
+  } finally {
+    isCreatingTrack.value = false;
+  }
+}
+
+function setFocusAudioFile(event: Event): void {
+  focusAudioFile.value = getFileFromEvent(event);
+}
+
+async function uploadFocusAudioFile(): Promise<void> {
+  if (!selectedTrack.value || !focusAudioFile.value) {
+    return;
+  }
+
+  trackEditErrorMessage.value = "";
+  isUploadingAudio.value = true;
+
+  try {
+    const updatedTrack = await uploadTrackAudio(selectedTrack.value.id, focusAudioFile.value);
+
+    updateTrackInState(updatedTrack);
+    selectedTrack.value = updatedTrack;
+    focusAudioFile.value = null;
+  } catch (error) {
+    trackEditErrorMessage.value = error instanceof Error ? error.message : "Could not upload audio";
+  } finally {
+    isUploadingAudio.value = false;
+  }
+}
+
+async function startSelectedTrackAudioRetrieval(): Promise<void> {
+  if (!selectedTrack.value) {
+    return;
+  }
+
+  await startRetrievalForTrack(selectedTrack.value, retrievalInputDraft.value);
+}
+
+async function startRetrievalForTrack(track: TrackView, input: string): Promise<void> {
+  isRetrievalDialogOpen.value = true;
+  await runRetrievalMutation(async () =>
+    startTrackRetrieval(track.id, input.trim() || getDefaultRetrievalInput(track)),
+  );
+}
+
+function closeRetrievalDialog(): void {
+  isRetrievalDialogOpen.value = false;
+}
+
+async function refreshRetrievalJob(): Promise<void> {
+  if (!retrievalJob.value) {
+    return;
+  }
+
+  await runRetrievalMutation(async () => fetchRetrievalJob(retrievalJob.value?.id ?? ""));
+}
+
+async function chooseYandexRetrievalCandidate(candidateId: string | null): Promise<void> {
+  if (!retrievalJob.value) {
+    return;
+  }
+
+  await runRetrievalMutation(async () =>
+    selectYandexRetrievalCandidate(retrievalJob.value?.id ?? "", candidateId),
+  );
+}
+
+async function chooseSpotifyRetrievalCandidate(candidateId: string | null): Promise<void> {
+  if (!retrievalJob.value) {
+    return;
+  }
+
+  await runRetrievalMutation(async () =>
+    selectSpotifyRetrievalCandidate(retrievalJob.value?.id ?? "", candidateId),
+  );
+}
+
+async function retryCurrentRetrieval(): Promise<void> {
+  if (!retrievalJob.value) {
+    return;
+  }
+
+  await runRetrievalMutation(async () => retryRetrievalJob(retrievalJob.value?.id ?? ""));
+}
+
+async function cancelCurrentRetrieval(): Promise<void> {
+  if (!retrievalJob.value) {
+    return;
+  }
+
+  await runRetrievalMutation(async () => cancelRetrievalJob(retrievalJob.value?.id ?? ""));
+}
+
+async function runRetrievalMutation(
+  action: () => Promise<RetrievalJobView>,
+): Promise<RetrievalJobView | null> {
+  retrievalErrorMessage.value = "";
+  isRetrievalBusy.value = true;
+
+  try {
+    const job = await action();
+
+    applyRetrievalJob(job);
+
+    return job;
+  } catch (error) {
+    retrievalErrorMessage.value =
+      error instanceof Error ? error.message : "Could not run audio retrieval";
+
+    return null;
+  } finally {
+    isRetrievalBusy.value = false;
+  }
+}
+
+function applyRetrievalJob(job: RetrievalJobView): void {
+  retrievalJob.value = job;
+  isRetrievalDialogOpen.value = true;
+
+  if (job.linkedTrack) {
+    updateTrackInState(job.linkedTrack);
+
+    if (selectedTrack.value?.id === job.linkedTrack.id) {
+      selectedTrack.value = job.linkedTrack;
+    }
+  }
+
+  if (job.lucidaUrl && openedLucidaUrl.value !== job.lucidaUrl) {
+    openedLucidaUrl.value = job.lucidaUrl;
+    window.open(job.lucidaUrl, "_blank", "noopener");
+  }
+
+  scheduleRetrievalPolling(job);
+}
+
+function openCurrentLucidaUrl(): void {
+  if (retrievalJob.value?.lucidaUrl) {
+    window.open(retrievalJob.value.lucidaUrl, "_blank", "noopener");
+  }
+}
+
+function getDefaultRetrievalInput(track: TrackView): string {
+  return [track.artist, track.title].filter(Boolean).join(" ").trim() || track.title;
+}
+
+function getRetrievalStageLabel(stage: RetrievalJobView["stage"]): string {
+  switch (stage) {
+    case "cancelled":
+      return "Cancelled";
+    case "downloading-spotify":
+      return "Downloading from SpotiFLAC";
+    case "downloading-yandex":
+      return "Downloading from Yandex";
+    case "failed":
+      return "Failed";
+    case "linked":
+      return "Audio linked";
+    case "lucida":
+      return "Lucida fallback";
+    case "searching-spotify":
+      return "Searching Spotify";
+    case "searching-yandex":
+      return "Searching Yandex";
+    case "spotify-candidates":
+      return "Select from SpotiFLAC";
+    case "yandex-candidates":
+      return "Select from Yandex";
+  }
+}
+
+function isRetrievalWorking(stage: RetrievalJobView["stage"] | undefined): boolean {
+  return Boolean(stage && (stage.startsWith("searching") || stage.startsWith("downloading")));
+}
+
+function scheduleRetrievalPolling(job: RetrievalJobView): void {
+  clearRetrievalPolling();
+
+  if (!isRetrievalWorking(job.stage)) {
+    return;
+  }
+
+  retrievalPollTimer = window.setTimeout(() => {
+    void refreshRetrievalJob();
+  }, 1000);
+}
+
+function clearRetrievalPolling(): void {
+  if (retrievalPollTimer !== null) {
+    window.clearTimeout(retrievalPollTimer);
+    retrievalPollTimer = null;
+  }
+}
+
+function getRetrievalCandidateMeta(candidate: RetrievalCandidateView): string {
+  return [
+    candidate.artists.join(", "),
+    formatCandidateDuration(candidate.durationMs),
+    candidate.lossless === true ? "FLAC" : null,
+    candidate.matchPercent === null ? null : `${candidate.matchPercent}% match`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function formatCandidateDuration(durationMs: number | null): string | null {
+  if (!durationMs) {
+    return null;
+  }
+
+  const seconds = Math.round(durationMs / 1000);
+
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function updateTrackInState(track: TrackView): void {
+  tracks.value = tracks.value.map((candidate) => (candidate.id === track.id ? track : candidate));
+}
+
+function syncSelectionToTrack(track: TrackView): void {
+  if (track.placement) {
+    isUnknownKeyShelfSelected.value = false;
+    selectedBoundaryIndex.value = getBoundaryIndex(track.placement);
+    selectedSection.value = getTrackSectionIndex(track) ?? track.placement.homeIndex;
+    selectedSlice.value = getTrackSectionSlice(track);
+    selectedSectionScope.value = "slice";
+  } else {
+    isUnknownKeyShelfSelected.value = true;
+    selectedBoundaryIndex.value = null;
+    selectedSlice.value = "home";
+    selectedSectionScope.value = "section";
+  }
+}
+
+function getSelectedKeyOrDefault(): TrackKey {
+  return (
+    selectedTrack.value?.key ?? {
+      mode: "natural-minor",
+      tonic: "A",
+      variant: "diatonic",
+    }
+  );
+}
+
+function getValueFromEvent(event: Event): string {
+  return event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement
+    ? event.target.value
+    : "";
+}
+
+function getCheckedFromEvent(event: Event): boolean {
+  return event.target instanceof HTMLInputElement ? event.target.checked : false;
+}
+
+function getFileFromEvent(event: Event): File | null {
+  if (!(event.target instanceof HTMLInputElement)) {
+    return null;
+  }
+
+  return event.target.files?.[0] ?? null;
+}
+
+function parseOptionalNumberInput(value: string): number | null {
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error("BPM must be a positive number");
+  }
+
+  return parsed;
+}
+
+function parseDelimitedText(value: string): string[] {
+  return value
+    .split(/[,\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function buildDemoTrackViews(): TrackView[] {
+  return sampleTracks.map((track) => ({
+    ...track,
+    audioAvailable: false,
+    audioFileName: null,
+    audioUrl: null,
+    keyLabel: describeKey(track.key),
+    placement: track.key ? getModalPlacement(track.key) : null,
+  }));
 }
 
 function buildMockDraftSets(sourceTracks: readonly TrackView[]): DraftSet[] {
   return [
     {
+      comment: "Local demo set",
       id: "main",
+      isDemo: true,
       name: "Festival draft",
       trackIds: buildClockwiseDraft(sourceTracks, DEFAULT_DRAFT_START_SECTION),
     },
     {
+      comment: "Local demo set",
       id: "warmup",
+      isDemo: true,
       name: "Warmup arc",
       trackIds: buildClockwiseDraft(sourceTracks, 9),
     },
     {
+      comment: "Local demo set",
       id: "bridge",
+      isDemo: true,
       name: "Bridge ideas",
       trackIds: buildClockwiseDraft(sourceTracks, 3),
     },
@@ -688,8 +1518,10 @@ function compareDraftCandidates(first: TrackView, second: TrackView): number {
     return secondScore - firstScore;
   }
 
-  if (first.bpm !== second.bpm) {
-    return first.bpm - second.bpm;
+  const bpmComparison = compareNullableBpmThenTitle(first, second);
+
+  if (bpmComparison !== 0) {
+    return bpmComparison;
   }
 
   return first.title.localeCompare(second.title);
@@ -889,8 +1721,12 @@ function compareBrowserTracks(first: TrackView, second: TrackView): number {
     const firstScore = getBpmCompatibilityScore(referenceTrack.bpm, first.bpm);
     const secondScore = getBpmCompatibilityScore(referenceTrack.bpm, second.bpm);
 
-    if (firstScore !== secondScore) {
+    if (firstScore !== null && secondScore !== null && firstScore !== secondScore) {
       return secondScore - firstScore;
+    }
+
+    if (firstScore !== secondScore) {
+      return firstScore === null ? 1 : -1;
     }
 
     const firstHarmonicScore = canTracksFollow(referenceTrack, first) ? 1 : 0;
@@ -901,8 +1737,10 @@ function compareBrowserTracks(first: TrackView, second: TrackView): number {
     }
   }
 
-  if (first.bpm !== second.bpm) {
-    return first.bpm - second.bpm;
+  const bpmComparison = compareNullableBpmThenTitle(first, second);
+
+  if (bpmComparison !== 0) {
+    return bpmComparison;
   }
 
   return first.title.localeCompare(second.title);
@@ -918,11 +1756,19 @@ function getTrackBpmCompatibilityWidth(track: TrackView): string {
   return `${getTrackBpmCompatibilityScore(track) ?? 0}%`;
 }
 
+function getTrackBpmCompatibilityScoreLabel(track: TrackView): string {
+  return String(getTrackBpmCompatibilityScore(track) ?? "n/a");
+}
+
 function getTrackBpmCompatibilityTitle(track: TrackView): string {
   const referenceTrack = lastDraftTrack.value;
 
   if (!referenceTrack) {
     return "No draft endpoint selected";
+  }
+
+  if (referenceTrack.bpm === null || track.bpm === null) {
+    return "BPM match unavailable";
   }
 
   const deltaPercent = getBpmDeltaRatio(referenceTrack.bpm, track.bpm) * 100;
@@ -931,7 +1777,14 @@ function getTrackBpmCompatibilityTitle(track: TrackView): string {
   return `BPM match against ${referenceTrack.bpm} BPM: ${score}/100, ${deltaPercent.toFixed(1)}% apart`;
 }
 
-function getBpmCompatibilityScore(referenceBpm: number, candidateBpm: number): number {
+function getBpmCompatibilityScore(
+  referenceBpm: number | null,
+  candidateBpm: number | null,
+): number | null {
+  if (referenceBpm === null || candidateBpm === null) {
+    return null;
+  }
+
   const deltaRatio = getBpmDeltaRatio(referenceBpm, candidateBpm);
   const normalizedDelta = deltaRatio / BPM_SCORE_HALF_LIFE;
   const score = 100 / (1 + normalizedDelta * normalizedDelta);
@@ -945,6 +1798,22 @@ function getBpmDeltaRatio(referenceBpm: number, candidateBpm: number): number {
   }
 
   return Math.abs(candidateBpm - referenceBpm) / referenceBpm;
+}
+
+function compareNullableBpmThenTitle(first: TrackView, second: TrackView): number {
+  if (first.bpm === null && second.bpm !== null) {
+    return 1;
+  }
+
+  if (first.bpm !== null && second.bpm === null) {
+    return -1;
+  }
+
+  if (first.bpm !== null && second.bpm !== null && first.bpm !== second.bpm) {
+    return first.bpm - second.bpm;
+  }
+
+  return first.title.localeCompare(second.title);
 }
 
 function getTrackTouchedSections(track: TrackView): number[] {
@@ -1184,6 +2053,14 @@ function confidenceLabel(state: VerificationState): string {
   }
 }
 
+function formatBpm(bpm: number | null): string {
+  return bpm === null ? "Unknown BPM" : `${bpm} BPM`;
+}
+
+function formatBpmValue(bpm: number | null): string {
+  return bpm === null ? "Unknown" : String(bpm);
+}
+
 function placementLaneLabel(lane: PlacementLane | undefined): string {
   switch (lane) {
     case "home":
@@ -1411,11 +2288,15 @@ function assertNever(value: never): never {
       >
         <div class="panel-heading">
           <div>
-            <p class="eyebrow">Draft sets</p>
-            <h2>{{ activeDraftSet?.name ?? "Draft set" }}</h2>
+            <p class="eyebrow">Sets</p>
+            <h2>{{ activeDraftSet?.name ?? "No set yet" }}</h2>
           </div>
           <strong>{{ draftTracks.length }}</strong>
         </div>
+        <form class="new-set-form" @submit.prevent="createDraftSetFromInput">
+          <input v-model="newSetName" type="text" placeholder="New set name" />
+          <button type="submit" :disabled="isSetSaving">Create</button>
+        </form>
         <div class="set-tabs" aria-label="Draft set selector">
           <button
             v-for="draftSet in draftSets"
@@ -1429,16 +2310,38 @@ function assertNever(value: never): never {
             <small>{{ draftSet.trackIds.length }}</small>
           </button>
         </div>
+        <div v-if="activeDraftSet" class="set-edit-row">
+          <input
+            v-model="renameSetName"
+            type="text"
+            :disabled="activeDraftSet.isDemo"
+            @blur="saveActiveSetName"
+            @keydown.enter.prevent="saveActiveSetName"
+          />
+          <button
+            type="button"
+            class="icon-button remove-button"
+            :disabled="isSetSaving"
+            title="Delete set"
+            @click="deleteActiveSet"
+          >
+            ×
+          </button>
+        </div>
+        <p v-if="setErrorMessage" class="mutation-error">{{ setErrorMessage }}</p>
         <button
           type="button"
           class="sort-harmonic-button"
-          :disabled="activeDraftTrackIds.length < 2"
+          :disabled="activeDraftTrackIds.length < 2 || isSetSaving"
           title="Reorder this draft set to maximize harmonic transitions"
           @click="sortActiveDraftHarmonically"
         >
           Sort harmonically
         </button>
-        <ol>
+        <p v-if="draftSets.length === 0" class="empty-state">
+          Create a set to start saving a real running order.
+        </p>
+        <ol v-else>
           <li
             v-for="(track, index) in draftTracks"
             :key="`${track.id}-${index}`"
@@ -1474,7 +2377,7 @@ function assertNever(value: never): never {
                   !
                 </span>
               </strong>
-              <small>{{ track.bpm }} BPM · {{ track.keyLabel }}</small>
+              <small>{{ formatBpm(track.bpm) }} · {{ track.keyLabel }}</small>
             </button>
             <div class="chain-controls" aria-label="Draft track controls">
               <button
@@ -1519,11 +2422,14 @@ function assertNever(value: never): never {
             <h2>{{ browserTitle }}</h2>
           </div>
           <div class="track-browser-actions">
+            <button type="button" class="secondary-action-button" @click="openNewTrackDialog">
+              New track
+            </button>
             <button
               type="button"
               class="add-button"
               :class="{ risky: isAddTransitionRisky, used: selectedTrackInAnyDraftSet }"
-              :disabled="!selectedTrack"
+              :disabled="!selectedTrack || !activeDraftSet || isSetSaving"
               :title="addButtonTitle"
               @click="addSelectedTrack"
             >
@@ -1568,7 +2474,7 @@ function assertNever(value: never): never {
             <strong>{{ track.title }}</strong>
             <small class="track-card-meta">
               <span>
-                {{ track.bpm }} BPM
+                {{ formatBpm(track.bpm) }}
                 <span
                   v-if="track.confidence.bpm !== 'confirmed'"
                   class="inline-confidence"
@@ -1596,7 +2502,7 @@ function assertNever(value: never): never {
             >
               <span class="bpm-score-label">
                 <span>BPM match</span>
-                <span class="bpm-score-value">{{ getTrackBpmCompatibilityScore(track) }}</span>
+                <span class="bpm-score-value">{{ getTrackBpmCompatibilityScoreLabel(track) }}</span>
               </span>
               <span
                 class="bpm-score-meter"
@@ -1633,6 +2539,165 @@ function assertNever(value: never): never {
               :src="selectedTrack.audioUrl"
             ></audio>
             <p v-else class="muted">No source file path is linked yet.</p>
+            <div class="audio-upload-row">
+              <input type="file" accept="audio/*" @change="setFocusAudioFile" />
+              <button
+                type="button"
+                class="secondary-action-button"
+                :disabled="!focusAudioFile || isUploadingAudio"
+                @click="uploadFocusAudioFile"
+              >
+                Upload
+              </button>
+            </div>
+            <div class="retrieval-launch-row">
+              <label>
+                <span>Retrieval input</span>
+                <input
+                  v-model="retrievalInputDraft"
+                  type="text"
+                  :placeholder="getDefaultRetrievalInput(selectedTrack)"
+                />
+              </label>
+              <button
+                type="button"
+                class="secondary-action-button"
+                :disabled="isRetrievalBusy || isRetrievalWorking(retrievalJob?.stage)"
+                @click="startSelectedTrackAudioRetrieval"
+              >
+                {{ selectedTrack.audioAvailable ? "Replace audio" : "Retrieve audio" }}
+              </button>
+            </div>
+            <small v-if="audioUploadDir" class="audio-folder-path">{{ audioUploadDir }}</small>
+          </section>
+          <section class="track-edit-panel" aria-label="Track editor">
+            <div class="editor-grid">
+              <label>
+                <span>BPM</span>
+                <input
+                  v-model="bpmDraft"
+                  type="number"
+                  min="1"
+                  step="0.01"
+                  placeholder="Unknown"
+                  :disabled="isTrackSaving"
+                  @focus="focusBpmDraft"
+                  @blur="blurBpmDraft"
+                  @change="saveBpmDraftFromEvent"
+                  @keydown.enter.prevent="saveBpmDraftFromEvent"
+                />
+              </label>
+              <label>
+                <span>BPM state</span>
+                <select
+                  :value="selectedTrack.confidence.bpm"
+                  :disabled="isTrackSaving"
+                  @change="updateSelectedConfidence('bpm', $event)"
+                >
+                  <option v-for="state in VERIFICATION_OPTIONS" :key="state" :value="state">
+                    {{ confidenceLabel(state) }}
+                  </option>
+                </select>
+              </label>
+              <label class="checkbox-field">
+                <input
+                  type="checkbox"
+                  :checked="isKeyUnknownDraft"
+                  @change="updateSelectedKeyUnknown"
+                />
+                <span>Unknown key</span>
+              </label>
+              <label>
+                <span>Tonic</span>
+                <select
+                  :value="getSelectedKeyOrDefault().tonic"
+                  :disabled="isKeyUnknownDraft"
+                  @change="updateSelectedKeyTonic"
+                >
+                  <option v-for="pitch in PITCH_CLASSES" :key="pitch" :value="pitch">
+                    {{ PITCH_CLASS_LABELS[pitch].primary }}
+                  </option>
+                </select>
+              </label>
+              <label>
+                <span>Mode</span>
+                <select
+                  :value="getSelectedKeyOrDefault().mode"
+                  :disabled="isKeyUnknownDraft"
+                  @change="updateSelectedKeyMode"
+                >
+                  <option v-for="mode in MODE_OPTIONS" :key="mode" :value="mode">
+                    {{ mode }}
+                  </option>
+                </select>
+              </label>
+              <label>
+                <span>Variant</span>
+                <select
+                  :value="getSelectedKeyOrDefault().variant"
+                  :disabled="isKeyUnknownDraft"
+                  @change="updateSelectedKeyVariant"
+                >
+                  <option v-for="variant in VARIANT_OPTIONS" :key="variant" :value="variant">
+                    {{ variant }}
+                  </option>
+                </select>
+              </label>
+              <label>
+                <span>Key state</span>
+                <select
+                  :value="selectedTrack.confidence.key"
+                  :disabled="isTrackSaving"
+                  @change="updateSelectedConfidence('key', $event)"
+                >
+                  <option v-for="state in VERIFICATION_OPTIONS" :key="state" :value="state">
+                    {{ confidenceLabel(state) }}
+                  </option>
+                </select>
+              </label>
+            </div>
+            <label>
+              <span>Harmony notes</span>
+              <textarea
+                v-model="harmonyNotesDraft"
+                rows="2"
+                :disabled="isTrackSaving"
+                @blur="saveHarmonyNotesDraft"
+              ></textarea>
+            </label>
+            <label>
+              <span>Comment</span>
+              <textarea
+                v-model="commentDraft"
+                rows="2"
+                :disabled="isTrackSaving"
+                @blur="saveCommentDraft"
+              ></textarea>
+            </label>
+            <label>
+              <span>Compact chords</span>
+              <input
+                v-model="chordsDraft"
+                type="text"
+                placeholder="Am, C, D, F"
+                :disabled="isTrackSaving"
+                @blur="saveChordsDraft"
+                @keydown.enter.prevent="saveChordsDraft"
+              />
+            </label>
+            <label>
+              <span>Tags</span>
+              <input
+                v-model="tagsDraft"
+                type="text"
+                placeholder="tag, another tag"
+                :disabled="isTrackSaving"
+                @blur="saveTagsDraft"
+                @keydown.enter.prevent="saveTagsDraft"
+              />
+            </label>
+            <p v-if="isTrackSaving || isUploadingAudio" class="muted">Saving...</p>
+            <p v-if="trackEditErrorMessage" class="mutation-error">{{ trackEditErrorMessage }}</p>
           </section>
           <dl>
             <div>
@@ -1651,7 +2716,7 @@ function assertNever(value: never): never {
             <div>
               <dt>BPM</dt>
               <dd class="value-with-badges">
-                {{ selectedTrack.bpm }}
+                {{ formatBpmValue(selectedTrack.bpm) }}
                 <span
                   v-if="selectedTrack.confidence.bpm !== 'confirmed'"
                   class="inline-confidence"
@@ -1723,6 +2788,285 @@ function assertNever(value: never): never {
         <p v-else class="muted">Select a dot or row.</p>
       </aside>
     </section>
+    <div
+      v-if="isNewTrackDialogOpen"
+      class="modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Create track"
+    >
+      <form class="track-create-dialog" @submit.prevent="submitNewTrack">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Library</p>
+            <h2>New track</h2>
+          </div>
+          <button type="button" class="icon-button" title="Close" @click="closeNewTrackDialog">
+            ×
+          </button>
+        </div>
+        <div class="editor-grid">
+          <label>
+            <span>Title</span>
+            <input v-model="newTrackForm.title" type="text" required />
+          </label>
+          <label>
+            <span>Artist</span>
+            <input v-model="newTrackForm.artist" type="text" />
+          </label>
+          <label>
+            <span>BPM</span>
+            <input
+              v-model="newTrackForm.bpm"
+              type="number"
+              min="1"
+              step="0.01"
+              placeholder="Unknown"
+            />
+          </label>
+          <label class="checkbox-field">
+            <input v-model="newTrackForm.isKeyUnknown" type="checkbox" />
+            <span>Unknown key</span>
+          </label>
+          <label>
+            <span>Tonic</span>
+            <select v-model="newTrackForm.keyTonic" :disabled="newTrackForm.isKeyUnknown">
+              <option v-for="pitch in PITCH_CLASSES" :key="pitch" :value="pitch">
+                {{ PITCH_CLASS_LABELS[pitch].primary }}
+              </option>
+            </select>
+          </label>
+          <label>
+            <span>Mode</span>
+            <select v-model="newTrackForm.keyMode" :disabled="newTrackForm.isKeyUnknown">
+              <option v-for="mode in MODE_OPTIONS" :key="mode" :value="mode">{{ mode }}</option>
+            </select>
+          </label>
+          <label>
+            <span>Variant</span>
+            <select v-model="newTrackForm.keyVariant" :disabled="newTrackForm.isKeyUnknown">
+              <option v-for="variant in VARIANT_OPTIONS" :key="variant" :value="variant">
+                {{ variant }}
+              </option>
+            </select>
+          </label>
+          <label>
+            <span>Audio</span>
+            <input type="file" accept="audio/*" @change="setNewTrackAudioFile" />
+          </label>
+        </div>
+        <label>
+          <span>Harmony notes</span>
+          <textarea v-model="newTrackForm.harmonyNotes" rows="2"></textarea>
+        </label>
+        <label>
+          <span>Comment</span>
+          <textarea v-model="newTrackForm.comment" rows="2"></textarea>
+        </label>
+        <label>
+          <span>Compact chords</span>
+          <input v-model="newTrackForm.chords" type="text" placeholder="Am, C, D, F" />
+        </label>
+        <label>
+          <span>Tags</span>
+          <input v-model="newTrackForm.tags" type="text" placeholder="manual, tonight" />
+        </label>
+        <label class="checkbox-field retrieval-checkbox">
+          <input v-model="newTrackForm.shouldRetrieveAudio" type="checkbox" />
+          <span>Try to retrieve audio automatically</span>
+        </label>
+        <p v-if="createTrackErrorMessage" class="mutation-error">{{ createTrackErrorMessage }}</p>
+        <div class="dialog-actions">
+          <button type="button" class="secondary-action-button" @click="closeNewTrackDialog">
+            Cancel
+          </button>
+          <button type="submit" class="add-button" :disabled="isCreatingTrack">
+            {{ isCreatingTrack ? "Creating..." : "Create track" }}
+          </button>
+        </div>
+      </form>
+    </div>
+    <div
+      v-if="isRetrievalDialogOpen"
+      class="modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Audio retrieval"
+    >
+      <section class="retrieval-dialog">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Audio retrieval</p>
+            <h2>
+              {{ retrievalJob ? getRetrievalStageLabel(retrievalJob.stage) : "Retrieve audio" }}
+            </h2>
+          </div>
+          <button type="button" class="icon-button" title="Close" @click="closeRetrievalDialog">
+            ×
+          </button>
+        </div>
+        <div class="retrieval-modal-grid">
+          <section class="retrieval-control-panel">
+            <label>
+              <span>Input</span>
+              <input v-model="retrievalInputDraft" type="text" />
+            </label>
+            <label>
+              <span>Output folder</span>
+              <input :value="audioUploadDir" type="text" readonly />
+            </label>
+            <div class="retrieval-stage-card" :class="retrievalJob?.stage ?? 'idle'">
+              <span
+                v-if="retrievalJob && isRetrievalWorking(retrievalJob.stage)"
+                class="busy-dot"
+              ></span>
+              <strong>
+                {{ retrievalJob ? getRetrievalStageLabel(retrievalJob.stage) : "Ready" }}
+              </strong>
+              <small>{{ retrievalJob?.input ?? "No retrieval has been started yet." }}</small>
+            </div>
+            <p v-if="retrievalErrorMessage" class="mutation-error">{{ retrievalErrorMessage }}</p>
+            <p v-if="retrievalJob?.error" class="mutation-error">{{ retrievalJob.error }}</p>
+            <div class="retrieval-action-grid">
+              <button
+                type="button"
+                class="add-button"
+                :disabled="
+                  !selectedTrack || isRetrievalBusy || isRetrievalWorking(retrievalJob?.stage)
+                "
+                @click="startSelectedTrackAudioRetrieval"
+              >
+                {{ selectedTrack?.audioAvailable ? "Replace audio" : "Retrieve audio" }}
+              </button>
+              <button
+                v-if="retrievalJob"
+                type="button"
+                class="secondary-action-button"
+                :disabled="isRetrievalBusy"
+                @click="refreshRetrievalJob"
+              >
+                Refresh
+              </button>
+              <button
+                v-if="
+                  retrievalJob &&
+                  ['failed', 'cancelled', 'lucida', 'linked'].includes(retrievalJob.stage)
+                "
+                type="button"
+                class="secondary-action-button"
+                :disabled="isRetrievalBusy"
+                @click="retryCurrentRetrieval"
+              >
+                Retry
+              </button>
+              <button
+                v-if="retrievalJob?.stage === 'downloading-yandex'"
+                type="button"
+                class="secondary-action-button"
+                :disabled="isRetrievalBusy"
+                @click="chooseYandexRetrievalCandidate(null)"
+              >
+                Skip Yandex
+              </button>
+              <button
+                v-if="retrievalJob?.stage === 'downloading-spotify'"
+                type="button"
+                class="secondary-action-button"
+                :disabled="isRetrievalBusy"
+                @click="chooseSpotifyRetrievalCandidate(null)"
+              >
+                Skip SpotiFLAC
+              </button>
+              <button
+                v-if="retrievalJob && isRetrievalWorking(retrievalJob.stage)"
+                type="button"
+                class="secondary-action-button"
+                @click="cancelCurrentRetrieval"
+              >
+                Cancel
+              </button>
+            </div>
+          </section>
+          <section v-if="retrievalJob" class="retrieval-choice-panel">
+            <div v-if="retrievalJob.stage === 'yandex-candidates'" class="candidate-list">
+              <button
+                v-for="candidate in retrievalJob.yandexCandidates"
+                :key="candidate.id"
+                type="button"
+                class="candidate-button"
+                :disabled="isRetrievalBusy"
+                @click="chooseYandexRetrievalCandidate(candidate.id)"
+              >
+                <span>{{ candidate.title }}</span>
+                <small>{{ getRetrievalCandidateMeta(candidate) }}</small>
+              </button>
+              <button
+                type="button"
+                class="secondary-action-button"
+                :disabled="isRetrievalBusy"
+                @click="chooseYandexRetrievalCandidate(null)"
+              >
+                Skip Yandex
+              </button>
+            </div>
+            <div v-else-if="retrievalJob.stage === 'spotify-candidates'" class="candidate-list">
+              <button
+                v-for="candidate in retrievalJob.spotifyCandidates"
+                :key="candidate.id"
+                type="button"
+                class="candidate-button"
+                :disabled="isRetrievalBusy"
+                @click="chooseSpotifyRetrievalCandidate(candidate.id)"
+              >
+                <span>{{ candidate.title }}</span>
+                <small>{{ getRetrievalCandidateMeta(candidate) }}</small>
+              </button>
+              <button
+                type="button"
+                class="secondary-action-button"
+                :disabled="isRetrievalBusy"
+                @click="chooseSpotifyRetrievalCandidate(null)"
+              >
+                Skip SpotiFLAC
+              </button>
+            </div>
+            <div v-else-if="retrievalJob.stage === 'lucida'" class="retrieval-empty-state">
+              <strong>Manual fallback is ready</strong>
+              <p>Lucida opened in the browser. Download the FLAC into the folder shown here.</p>
+              <button type="button" class="add-button" @click="openCurrentLucidaUrl">
+                Open Lucida
+              </button>
+            </div>
+            <div v-else-if="retrievalJob.stage === 'linked'" class="retrieval-empty-state">
+              <strong>Audio linked</strong>
+              <p>
+                {{ retrievalJob.linkedTrack?.audioFileName ?? "The track now has a source file." }}
+              </p>
+            </div>
+            <div v-else class="retrieval-empty-state">
+              <strong>Working</strong>
+              <p>Keep this window open to watch search and download progress.</p>
+            </div>
+          </section>
+          <section v-else class="retrieval-choice-panel retrieval-empty-state">
+            <strong>Ready</strong>
+            <p>Start retrieval to search Yandex first, then SpotiFLAC, then Lucida.</p>
+          </section>
+        </div>
+        <section class="retrieval-log-panel">
+          <div class="retrieval-status-row">
+            <strong>Status log</strong>
+            <small>{{ retrievalJob?.messages.length ?? 0 }} messages</small>
+          </div>
+          <ol v-if="retrievalJob?.messages.length" class="retrieval-message-list">
+            <li v-for="(message, index) in retrievalJob.messages" :key="`${index}-${message}`">
+              {{ message }}
+            </li>
+          </ol>
+          <p v-else class="muted">No retrieval messages yet.</p>
+        </section>
+      </section>
+    </div>
     <nav class="mobile-tab-bar" aria-label="Mobile workspace sections">
       <button
         v-for="tab in mobileTabs"

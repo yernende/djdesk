@@ -85,7 +85,7 @@ export interface Track {
   title: string;
   artist?: string;
   audioPath?: string;
-  bpm: number;
+  bpm: number | null;
   key: TrackKey | null;
   chordProgression: readonly string[];
   confidence: TrackAnalysisConfidence;

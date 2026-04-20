@@ -163,8 +163,15 @@ export async function importChordAiChordsOnlyIntoDatabase(
     try {
       const report = await readReport(reportPath);
 
-      importReportForTrack(database, importRunId, row.trackId, report);
-      importedCount += 1;
+      if (importReportForTrack(database, importRunId, row.trackId, report)) {
+        importedCount += 1;
+      } else {
+        skipped.push({
+          reason: "Report has no compact chord progression",
+          reportPath,
+          trackId: row.trackId,
+        });
+      }
     } catch (error) {
       errors.push({
         error: error instanceof Error ? error.message : String(error),
@@ -300,11 +307,11 @@ function importReportForTrack(
   importRunId: string,
   trackId: string,
   report: ChordAiReport,
-): void {
+): boolean {
   const compactProgression = compactChordProgression(report.chordSegments);
 
   if (compactProgression.length === 0) {
-    throw new Error("Report has no compact chord progression");
+    return false;
   }
 
   database.exec("BEGIN IMMEDIATE");
@@ -328,6 +335,8 @@ function importReportForTrack(
     database.exec("ROLLBACK");
     throw error;
   }
+
+  return true;
 }
 
 function replaceCompactChords(

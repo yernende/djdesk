@@ -8,12 +8,14 @@ export interface MigrationResult {
 }
 
 interface MigrationFile {
+  isTransactionManaged: boolean;
   name: string;
   sql: string;
   version: string;
 }
 
 const migrationNamePattern = /^\d{4}_.+\.sql$/;
+const transactionManagedDirective = "-- djdesk:migration transaction-managed";
 
 export async function runMigrations(
   database: DatabaseSync,
@@ -58,11 +60,16 @@ async function readMigrations(migrationsUrl: URL): Promise<MigrationFile[]> {
   const files = entries.filter((entry) => migrationNamePattern.test(entry)).sort();
 
   return Promise.all(
-    files.map(async (name) => ({
-      name,
-      sql: await readFile(new URL(name, migrationsUrl), "utf8"),
-      version: basename(name, ".sql"),
-    })),
+    files.map(async (name) => {
+      const sql = await readFile(new URL(name, migrationsUrl), "utf8");
+
+      return {
+        isTransactionManaged: sql.trimStart().startsWith(transactionManagedDirective),
+        name,
+        sql,
+        version: basename(name, ".sql"),
+      };
+    }),
   );
 }
 
@@ -70,6 +77,12 @@ function applyMigration(database: DatabaseSync, migration: MigrationFile): void 
   const insertMigration = database.prepare(
     "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
   );
+
+  if (migration.isTransactionManaged) {
+    database.exec(migration.sql);
+    insertMigration.run(migration.version, migration.name);
+    return;
+  }
 
   database.exec("BEGIN IMMEDIATE");
 

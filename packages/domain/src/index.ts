@@ -32,3 +32,4 @@ export type {
   TransitionProfile,
   VerificationState,
 } from "./types.ts";
+export { PITCH_CLASSES } from "./types.ts";

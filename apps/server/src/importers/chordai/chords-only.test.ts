@@ -99,6 +99,41 @@ test("skips tracks that already have compact chords", async () => {
   }
 });
 
+test("skips reports with no compact chords without failing the import", async () => {
+  const fixture = await createChordsOnlyFixture();
+  const database = new DatabaseSync(fixture.databasePath);
+
+  try {
+    database.exec("PRAGMA foreign_keys = ON");
+    await runMigrations(database);
+    insertPlannerTrack(database);
+    await writeNoChordReport(fixture.reportPath);
+
+    const result = await importChordAiChordsOnlyIntoDatabase(database, {
+      databasePath: fixture.databasePath,
+      manifestPath: fixture.manifestPath,
+      statePath: fixture.statePath,
+    });
+
+    const chords = database
+      .prepare("SELECT symbol FROM track_chords WHERE track_id = ?")
+      .all("trk-rbx-fixture");
+
+    assert.equal(result.reportCount, 1);
+    assert.equal(result.importedCount, 0);
+    assert.equal(result.errors.length, 0);
+    assert.equal(result.skipped.length, 1);
+    assert.equal(result.skipped[0]?.reason, "Report has no compact chord progression");
+    assert.deepEqual(chords, []);
+  } finally {
+    database.close();
+    await rm(fixture.rootPath, {
+      force: true,
+      recursive: true,
+    });
+  }
+});
+
 async function createChordsOnlyFixture(): Promise<{
   databasePath: string;
   manifestPath: string;
@@ -231,6 +266,27 @@ async function writeFixtureReport(reportPath: string): Promise<void> {
       "bar,start_s,duration_s,bpm,basic_progression,slash_bass_progression,beat_1,beat_2,beat_3,beat_4",
       "1,0,5,130,Ebm Ebm,Ebm Ebm,Ebm,Ebm,,",
       "2,5,5,130,Ab Ab,Ab/G# Ab/G#,Ab,Ab,,",
+    ].join("\n"),
+    "utf8",
+  );
+}
+
+async function writeNoChordReport(reportPath: string): Promise<void> {
+  await writeFile(
+    join(reportPath, "chord_segments.csv"),
+    [
+      "index,start_s,end_s,duration_s,chord,bass,label,basic_label,degree,midi_notes",
+      "1,0,5,5,N,N,N,N,,",
+      "2,5,10,5,N,N,N,N,,",
+    ].join("\n"),
+    "utf8",
+  );
+  await writeFile(
+    join(reportPath, "bar_grid.csv"),
+    [
+      "bar,start_s,duration_s,bpm,basic_progression,slash_bass_progression,beat_1,beat_2,beat_3,beat_4",
+      "1,0,5,130,N N,N N,N,N,,",
+      "2,5,5,130,N N,N N,N,N,,",
     ].join("\n"),
     "utf8",
   );

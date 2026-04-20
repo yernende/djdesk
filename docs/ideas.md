@@ -45,6 +45,9 @@ Open questions:
 Imported analysis starts as unverified. The app needs a first-class workflow for
 reviewing and confirming musical metadata independently.
 
+Baseline implemented in ADR 0008: BPM/key editing and independent BPM/key
+confidence are available from the focus panel.
+
 Ideas mentioned:
 
 - Confirm or reject key separately from BPM.
@@ -107,6 +110,14 @@ Open questions:
 The local audio player is enough for previewing tracks, but DJ planning would
 benefit from more transport and inspection tools.
 
+Baseline implemented in ADR 0008: manual tracks can upload optional audio into
+the configured local upload directory.
+
+Baseline implemented in ADR 0009: existing and newly created tracks can launch a
+single-track retrieval flow through the sibling `dj` downloader, with Yandex,
+SpotiFLAC, and Lucida fallback. Retrieval job history is intentionally not
+persisted yet.
+
 Ideas mentioned:
 
 - Waveform or overview seek bar.
@@ -117,6 +128,10 @@ Ideas mentioned:
 - Optional transition preview with simple crossfade.
 - Keep paths as a local source of truth for now, but design for a hosted-server
   file strategy later.
+- Persist audio retrieval jobs across page reloads/server restarts.
+- Support playlist retrieval as a separate bulk flow.
+- Manually link a Lucida-downloaded file after the browser fallback.
+- Consider a guarded UI for switching the configured audio folder later.
 
 Open questions:
 
@@ -150,10 +165,12 @@ Open questions:
 Multiple sets now exist conceptually, but the long-term model should treat them
 as real user-owned planning objects.
 
+Baseline implemented in ADR 0008: sets are persisted in SQLite and can be
+created, renamed, deleted, reordered, and sorted harmonically.
+
 Ideas mentioned:
 
-- Create, rename, duplicate, archive, and delete sets.
-- Persist set contents in SQLite instead of treating mock sets as UI state.
+- Duplicate and archive sets.
 - Support repeated tracks when the user intentionally wants them.
 - Warn when a track appears in any set, while still allowing the action.
 - Show non-harmonic links as relationship markers between adjacent tracks.

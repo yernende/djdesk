@@ -12,12 +12,13 @@
     "import:chordai:chords-only": "npm run build --workspace @djdesk/domain && node src/importers/chordai/chords-only-cli.ts",
     "import:rekordbox": "npm run build --workspace @djdesk/domain && node src/importers/rekordbox/cli.ts",
     "start": "node src/index.ts",
-    "test": "node --test src/audio/*.test.ts src/importers/chordai/*.test.ts src/importers/rekordbox/*.test.ts",
+    "test": "node --test src/audio/*.test.ts src/db/*.test.ts src/importers/chordai/*.test.ts src/importers/rekordbox/*.test.ts src/routes.test.ts",
     "typecheck": "npm run build --workspace @djdesk/domain && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@djdesk/domain": "0.1.0",
     "@fastify/cors": "^11.2.0",
+    "@fastify/multipart": "^10.0.0",
     "fastify": "^5.8.5"
   }
 }

@@ -1,13 +1,24 @@
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 import Fastify, { type FastifyInstance } from "fastify";
 
 import type { ServerConfig } from "./config.ts";
 import { openDatabase } from "./db/database.ts";
 import { runMigrations } from "./db/migrations.ts";
 import { createSqliteTrackRepository, seedTracksIfEmpty } from "./repositories/tracks.ts";
+import { createDjToolRetriever } from "./retrieval/dj-tool.ts";
+import { createRetrievalManager } from "./retrieval/jobs.ts";
+import type { TrackRetriever } from "./retrieval/types.ts";
 import { registerRoutes } from "./routes.ts";
 
-export async function createServer(config: ServerConfig): Promise<FastifyInstance> {
+export interface ServerDependencies {
+  retriever?: TrackRetriever;
+}
+
+export async function createServer(
+  config: ServerConfig,
+  dependencies: ServerDependencies = {},
+): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
       level: process.env.LOG_LEVEL ?? "info",
@@ -32,7 +43,28 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     origin: true,
   });
 
-  await registerRoutes(app, createSqliteTrackRepository(database));
+  await app.register(multipart, {
+    limits: {
+      fileSize: 500 * 1024 * 1024,
+      files: 1,
+    },
+  });
+
+  const trackRepository = createSqliteTrackRepository(database);
+  const retriever =
+    dependencies.retriever ??
+    createDjToolRetriever({
+      audioUploadDir: config.audioUploadDir,
+      djToolRoot: config.djToolRoot,
+    });
+
+  await registerRoutes(app, trackRepository, {
+    audioUploadDir: config.audioUploadDir,
+    retrievalManager: createRetrievalManager({
+      retriever,
+      tracks: trackRepository,
+    }),
+  });
 
   return app;
 }
