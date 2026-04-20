@@ -18,6 +18,7 @@ import {
 } from "./api.ts";
 
 type SectionSlice = "home" | "pure-clockwise" | "pure-counter";
+type SectionSelectionScope = "section" | "slice";
 type CompatibilityClass = "compatible" | "incompatible" | null;
 
 const DEFAULT_DRAFT_LENGTH = 6;
@@ -38,6 +39,7 @@ const isUnknownKeyShelfSelected = ref(false);
 const selectedBoundaryIndex = ref<number | null>(null);
 const selectedSection = ref(DEFAULT_DRAFT_START_SECTION);
 const selectedSlice = ref<SectionSlice>("home");
+const selectedSectionScope = ref<SectionSelectionScope>("section");
 const selectedTrack = ref<TrackView | null>(null);
 const setDraft = ref<string[]>([]);
 const trackHarmony = ref<TrackHarmonyResponse | null>(null);
@@ -67,6 +69,10 @@ const selectedSectionTracks = computed(() => {
       .sort((first, second) => first.bpm - second.bpm);
   }
 
+  if (selectedSectionScope.value === "section") {
+    return getSectionTracks(selectedSection.value).sort((first, second) => first.bpm - second.bpm);
+  }
+
   return tracks.value
     .filter((track) =>
       trackBelongsToSectionSlice(track, selectedSection.value, selectedSlice.value),
@@ -81,7 +87,9 @@ const browserTitle = computed(() =>
     ? `${unknownKeyTracks.value.length} unplaced tracks`
     : selectedBoundaryIndex.value !== null
       ? `${selectedSectionTracks.value.length} boundary tracks`
-      : `${selectedSectionTracks.value.length} ${getSliceBrowserLabel(selectedSlice.value)} tracks`,
+      : selectedSectionScope.value === "section"
+        ? `${selectedSectionTracks.value.length} section tracks`
+        : `${selectedSectionTracks.value.length} ${getSliceBrowserLabel(selectedSlice.value)} tracks`,
 );
 
 const confirmedCount = computed(
@@ -194,7 +202,11 @@ watch(
 );
 
 function selectSection(index: number): void {
-  selectSectionSlice(index, "home");
+  isUnknownKeyShelfSelected.value = false;
+  selectedBoundaryIndex.value = null;
+  selectedSection.value = index;
+  selectedSectionScope.value = "section";
+  selectedTrack.value = selectedSectionTracks.value[0] ?? selectedTrack.value;
 }
 
 function selectSectionSlice(index: number, slice: SectionSlice): void {
@@ -202,6 +214,7 @@ function selectSectionSlice(index: number, slice: SectionSlice): void {
   selectedBoundaryIndex.value = null;
   selectedSection.value = index;
   selectedSlice.value = slice;
+  selectedSectionScope.value = "slice";
   selectedTrack.value = selectedSectionTracks.value[0] ?? selectedTrack.value;
 }
 
@@ -210,6 +223,7 @@ function selectBoundary(boundaryIndex: number): void {
   selectedBoundaryIndex.value = boundaryIndex;
   selectedSection.value = Math.floor(boundaryIndex);
   selectedSlice.value = "home";
+  selectedSectionScope.value = "slice";
   selectedTrack.value = selectedSectionTracks.value[0] ?? selectedTrack.value;
 }
 
@@ -221,10 +235,12 @@ function selectTrack(track: TrackView): void {
     selectedBoundaryIndex.value = getBoundaryIndex(track.placement);
     selectedSection.value = getTrackSectionIndex(track) ?? track.placement.homeIndex;
     selectedSlice.value = getTrackSectionSlice(track);
+    selectedSectionScope.value = "slice";
   } else {
     isUnknownKeyShelfSelected.value = true;
     selectedBoundaryIndex.value = null;
     selectedSlice.value = "home";
+    selectedSectionScope.value = "section";
   }
 }
 
@@ -232,6 +248,7 @@ function selectUnknownKeyTracks(): void {
   isUnknownKeyShelfSelected.value = true;
   selectedBoundaryIndex.value = null;
   selectedSlice.value = "home";
+  selectedSectionScope.value = "section";
   selectedTrack.value = unknownKeyTracks.value[0] ?? selectedTrack.value;
 }
 
@@ -412,6 +429,14 @@ function getSectionSliceTracks(sectionIndex: number, slice: SectionSlice): Track
   return tracks.value.filter((track) => trackBelongsToSectionSlice(track, sectionIndex, slice));
 }
 
+function getSectionTracks(sectionIndex: number): TrackView[] {
+  return tracks.value.filter((track) => trackBelongsToSection(track, sectionIndex));
+}
+
+function trackBelongsToSection(track: TrackView, sectionIndex: number): boolean {
+  return getTrackTouchedSections(track).includes(sectionIndex);
+}
+
 function getBoundaryTracks(boundaryIndex: number): TrackView[] {
   return tracks.value.filter((track) => trackTouchesBoundary(track, boundaryIndex));
 }
@@ -543,6 +568,10 @@ function getSelectedPositionLabel(): string {
 
   const sectionLabel = sections.value[selectedSection.value]?.label.primary ?? "La m";
 
+  if (selectedSectionScope.value === "section") {
+    return `${sectionLabel} section`;
+  }
+
   switch (selectedSlice.value) {
     case "home":
       return sectionLabel;
@@ -561,6 +590,15 @@ function isSubsectionActive(index: number, slice: SectionSlice): boolean {
 
 function isBoundaryActive(boundaryIndex: number): boolean {
   return isLastDraftBoundary(boundaryIndex);
+}
+
+function isSectionSelected(index: number): boolean {
+  return (
+    !isUnknownKeyShelfSelected.value &&
+    selectedBoundaryIndex.value === null &&
+    selectedSectionScope.value === "section" &&
+    selectedSection.value === index
+  );
 }
 
 function isLastDraftSection(index: number): boolean {
@@ -662,6 +700,7 @@ function assertNever(value: never): never {
               v-for="section in sections"
               :key="section.pitch"
               class="sector"
+              :class="{ selected: isSectionSelected(section.index) }"
               :d="sectorPath(section.index)"
               @click="selectSection(section.index)"
             />
@@ -783,6 +822,7 @@ function assertNever(value: never): never {
             :class="{
               active: isLastDraftSection(section.index),
               'last-draft': isLastDraftSection(section.index),
+              selected: isSectionSelected(section.index),
             }"
             :transform="labelTransform(section.index, 265)"
             @click="selectSection(section.index)"

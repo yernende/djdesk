@@ -155,6 +155,12 @@ h2 {
   stroke: rgba(23, 27, 24, 0.42);
 }
 
+.sector.selected {
+  fill: rgba(62, 82, 76, 0.16);
+  stroke: rgba(23, 27, 24, 0.46);
+  stroke-width: 2;
+}
+
 .sector.last-draft {
   fill: rgba(244, 193, 55, 0.46);
   stroke: #171b18;
@@ -190,6 +196,11 @@ h2 {
   paint-order: stroke fill;
   stroke: #fffaf0;
   stroke-width: 5px;
+}
+
+.section-label.selected .label-main,
+.section-label.selected .label-alt {
+  text-decoration: underline;
 }
 
 .subsection,
