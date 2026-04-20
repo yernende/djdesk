@@ -502,6 +502,21 @@ h2 {
   vertical-align: 1px;
 }
 
+.audio-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 42px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #1c6f5d;
+  color: #fffaf0;
+  font-size: 0.58rem;
+  font-weight: 950;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
 .chain-track strong,
 .track-row strong {
   font-size: 0.93rem;
@@ -721,6 +736,14 @@ h2 {
   min-width: 0;
 }
 
+.row-icon-badges {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  min-width: 0;
+}
+
 .mode-chip {
   flex: 0 1 auto;
   width: fit-content;
@@ -863,6 +886,52 @@ h2 {
 .artist {
   margin: 8px 0 18px;
   font-weight: 750;
+}
+
+.track-audio-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 12px 0 16px;
+  border-top: 1px solid rgba(23, 27, 24, 0.12);
+  border-bottom: 1px solid rgba(23, 27, 24, 0.12);
+}
+
+.track-audio-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.track-audio-heading span {
+  color: #9d3d2f;
+  font-size: 0.72rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.track-audio-heading small {
+  min-width: 0;
+  overflow: hidden;
+  color: #5e615d;
+  font-size: 0.76rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track-audio-panel audio {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+
+.track-audio-panel p {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 780;
 }
 
 dl {

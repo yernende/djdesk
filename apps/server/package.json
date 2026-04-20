@@ -7,10 +7,11 @@
     "build": "npm run typecheck",
     "db:migrate": "node src/db/migrate.ts",
     "dev": "npm run build --workspace @djdesk/domain && node --watch src/index.ts",
+    "audio:link": "npm run build --workspace @djdesk/domain && node src/audio/link-cli.ts",
     "import:chordai": "npm run build --workspace @djdesk/domain && node src/importers/chordai/cli.ts",
     "import:rekordbox": "npm run build --workspace @djdesk/domain && node src/importers/rekordbox/cli.ts",
     "start": "node src/index.ts",
-    "test": "node --test src/importers/chordai/*.test.ts src/importers/rekordbox/*.test.ts",
+    "test": "node --test src/audio/*.test.ts src/importers/chordai/*.test.ts src/importers/rekordbox/*.test.ts",
     "typecheck": "npm run build --workspace @djdesk/domain && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

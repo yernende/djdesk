@@ -1,6 +1,9 @@
 import type { CircleBucket, ModalPlacement, Track } from "@djdesk/domain";
 
 export interface TrackView extends Track {
+  audioAvailable: boolean;
+  audioFileName: string | null;
+  audioUrl: string | null;
   keyLabel: string;
   placement: ModalPlacement | null;
 }

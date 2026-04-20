@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 
 import {
   areKeysTransitionCompatible,
@@ -65,6 +65,7 @@ const activeDraftSetId = ref("main");
 const trackHarmony = ref<TrackHarmonyResponse | null>(null);
 const draggedDraftIndex = ref<number | null>(null);
 const dragOverDraftIndex = ref<number | null>(null);
+const audioPlayer = ref<HTMLAudioElement | null>(null);
 
 const sections = computed(() =>
   CIRCLE_OF_FIFTHS.map((pitch, index) => ({
@@ -267,12 +268,35 @@ watch(
   },
 );
 
+watch(
+  selectedTrack,
+  async (track, previousTrack) => {
+    const shouldContinuePlayback =
+      Boolean(previousTrack && track && previousTrack.id !== track.id) &&
+      isAudioElementPlaying(audioPlayer.value);
+
+    if (!shouldContinuePlayback || !track?.audioUrl) {
+      return;
+    }
+
+    await nextTick();
+    await audioPlayer.value?.play().catch(() => undefined);
+  },
+  {
+    flush: "sync",
+  },
+);
+
 function selectSection(index: number): void {
   isUnknownKeyShelfSelected.value = false;
   selectedBoundaryIndex.value = null;
   selectedSection.value = index;
   selectedSectionScope.value = "section";
   selectedTrack.value = selectedSectionTracks.value[0] ?? selectedTrack.value;
+}
+
+function isAudioElementPlaying(audioElement: HTMLAudioElement | null): boolean {
+  return Boolean(audioElement && !audioElement.paused && !audioElement.ended);
 }
 
 function selectSectionSlice(index: number, slice: SectionSlice): void {
@@ -1465,12 +1489,17 @@ function assertNever(value: never): never {
               <span class="mode-chip" :class="track.placement?.lane ?? 'unknown-key'">
                 {{ placementLaneLabel(track.placement?.lane) }}
               </span>
-              <span
-                v-if="hasHarmonyNotes(track)"
-                class="harmony-badge"
-                title="Special harmony note"
-              >
-                !
+              <span class="row-icon-badges">
+                <span v-if="track.audioAvailable" class="audio-badge" title="Audio linked">
+                  audio
+                </span>
+                <span
+                  v-if="hasHarmonyNotes(track)"
+                  class="harmony-badge"
+                  title="Special harmony note"
+                >
+                  !
+                </span>
               </span>
             </span>
             <strong>{{ track.title }}</strong>
@@ -1523,6 +1552,21 @@ function assertNever(value: never): never {
         <template v-if="selectedTrack">
           <h2>{{ selectedTrack.title }}</h2>
           <p class="artist">{{ selectedTrack.artist }}</p>
+          <section class="track-audio-panel" :class="{ empty: !selectedTrack.audioAvailable }">
+            <div class="track-audio-heading">
+              <span>Audio</span>
+              <small>{{ selectedTrack.audioFileName ?? "Not linked" }}</small>
+            </div>
+            <audio
+              v-if="selectedTrack.audioUrl"
+              ref="audioPlayer"
+              :key="selectedTrack.id"
+              controls
+              preload="metadata"
+              :src="selectedTrack.audioUrl"
+            ></audio>
+            <p v-else class="muted">No source file path is linked yet.</p>
+          </section>
           <dl>
             <div>
               <dt>Key</dt>

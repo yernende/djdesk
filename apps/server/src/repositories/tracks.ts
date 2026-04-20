@@ -3,8 +3,15 @@ import type { DatabaseSync } from "node:sqlite";
 import { sampleTracks, type Track, type TrackKey } from "@djdesk/domain";
 
 export interface TrackRepository {
+  getTrackAudioSource(trackId: string): Promise<TrackAudioSource | null>;
   getTrackHarmony(trackId: string): Promise<TrackHarmony | null>;
   listTracks(): Promise<readonly Track[]>;
+}
+
+export interface TrackAudioSource {
+  audioPath: string;
+  title: string;
+  trackId: string;
 }
 
 export interface TrackHarmony {
@@ -27,6 +34,7 @@ export interface TrackChordSegment {
 }
 
 interface TrackRow {
+  audio_path: string | null;
   artist: string | null;
   bpm: number;
   bpm_confidence: Track["confidence"]["bpm"];
@@ -72,6 +80,17 @@ export function createInMemoryTrackRepository(
   const tracks = [...seed];
 
   return {
+    async getTrackAudioSource(trackId) {
+      const track = tracks.find((candidate) => candidate.id === trackId);
+
+      return track?.audioPath
+        ? {
+            audioPath: track.audioPath,
+            title: track.title,
+            trackId,
+          }
+        : null;
+    },
     async getTrackHarmony(trackId) {
       const track = tracks.find((candidate) => candidate.id === trackId);
 
@@ -104,6 +123,31 @@ export function createInMemoryTrackRepository(
 
 export function createSqliteTrackRepository(database: DatabaseSync): TrackRepository {
   return {
+    async getTrackAudioSource(trackId) {
+      const row = database
+        .prepare(
+          `
+            SELECT id, title, audio_path
+            FROM tracks
+            WHERE id = ? AND audio_path IS NOT NULL
+          `,
+        )
+        .get(trackId) as unknown as
+        | {
+            audio_path: string | null;
+            id: string;
+            title: string;
+          }
+        | undefined;
+
+      return row?.audio_path
+        ? {
+            audioPath: row.audio_path,
+            title: row.title,
+            trackId: row.id,
+          }
+        : null;
+    },
     async getTrackHarmony(trackId) {
       const trackExists = database.prepare("SELECT 1 FROM tracks WHERE id = ?").get(trackId);
 
@@ -161,6 +205,7 @@ export function createSqliteTrackRepository(database: DatabaseSync): TrackReposi
             SELECT
               id,
               title,
+              audio_path,
               artist,
               bpm,
               tonic,
@@ -393,6 +438,7 @@ function toTrack(
   return {
     id: row.id,
     title: row.title,
+    ...(row.audio_path ? { audioPath: row.audio_path } : {}),
     ...(row.artist ? { artist: row.artist } : {}),
     bpm: row.bpm,
     key,
