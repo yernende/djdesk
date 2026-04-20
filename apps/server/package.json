@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "npm run typecheck",
+    "db:migrate": "node src/db/migrate.ts",
     "dev": "npm run build --workspace @djdesk/domain && node --watch src/index.ts",
     "start": "node src/index.ts",
     "typecheck": "npm run build --workspace @djdesk/domain && tsc -p tsconfig.json --noEmit"

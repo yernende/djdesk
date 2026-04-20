@@ -13,6 +13,7 @@
     "dev": "npm run build --workspace @djdesk/domain && concurrently -n server,client -c cyan,magenta \"npm run dev --workspace @djdesk/server\" \"npm run dev --workspace @djdesk/client\"",
     "dev:client": "npm run dev --workspace @djdesk/client",
     "dev:server": "npm run dev --workspace @djdesk/server",
+    "db:migrate": "npm run db:migrate --workspace @djdesk/server",
     "fmt": "oxfmt .",
     "fmt:check": "oxfmt . --check",
     "lint": "oxlint .",

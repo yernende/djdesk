@@ -2,7 +2,7 @@ import { readServerConfig } from "./config.ts";
 import { createServer } from "./server.ts";
 
 const config = readServerConfig();
-const server = await createServer();
+const server = await createServer(config);
 
 try {
   await server.listen({
