@@ -79,6 +79,7 @@ interface CreateTrackRequest {
   comment?: unknown;
   harmonyNotes?: unknown;
   key?: unknown;
+  nonStandardTuning?: unknown;
   tags?: unknown;
   title?: unknown;
 }
@@ -90,6 +91,7 @@ interface TrackAnalysisPatchRequest {
   confidence?: unknown;
   harmonyNotes?: unknown;
   key?: unknown;
+  nonStandardTuning?: unknown;
   tags?: unknown;
 }
 
@@ -661,6 +663,10 @@ function parseCreateTrackRequest(body: CreateTrackRequest | undefined): CreateTr
     input.harmonyNotes = body.harmonyNotes as string | null;
   }
 
+  if (body && Object.hasOwn(body, "nonStandardTuning")) {
+    input.nonStandardTuning = parseOptionalBoolean(body.nonStandardTuning, "nonStandardTuning");
+  }
+
   return input;
 }
 
@@ -697,6 +703,10 @@ function parseTrackAnalysisPatchRequest(
     input.tags = parseOptionalStringList(body.tags, "tags");
   }
 
+  if (body && Object.hasOwn(body, "nonStandardTuning")) {
+    input.nonStandardTuning = parseOptionalBoolean(body.nonStandardTuning, "nonStandardTuning");
+  }
+
   return input;
 }
 
@@ -716,6 +726,14 @@ function parseOptionalText(value: unknown, label: string): string | null {
   const trimmed = value.trim();
 
   return trimmed ? trimmed : null;
+}
+
+function parseOptionalBoolean(value: unknown, label: string): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  throw new TrackRepositoryValidationError(`${label} must be a boolean`);
 }
 
 function parseRetrievalCandidateId(

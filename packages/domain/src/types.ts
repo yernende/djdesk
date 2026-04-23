@@ -31,7 +31,7 @@ export type DiatonicMode =
 
 export type ModalVariant = "diatonic" | "raised-leading-tone" | "variable-degree";
 
-export type VerificationState = "estimated" | "confirmed" | "rejected";
+export type VerificationState = "estimated" | "confirmed";
 
 export type ModalPlacementLane = "home" | "pure-modal" | "modal-mixture";
 
@@ -92,6 +92,7 @@ export interface Track {
   harmonyNotes?: string;
   comment?: string;
   durationSeconds?: number;
+  nonStandardTuning?: boolean;
   tags: readonly string[];
 }
 

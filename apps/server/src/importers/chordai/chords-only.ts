@@ -6,8 +6,10 @@ import type { DatabaseSync } from "node:sqlite";
 import { openDatabase } from "../../db/database.ts";
 import { runMigrations } from "../../db/migrations.ts";
 import { parseCsv } from "./csv.ts";
+import { applyReportKeyToTrack, shouldUpdateTrackKeyFromReport } from "./key-sync.ts";
 import { compactChordProgression, parseChordAiReport } from "./parse.ts";
 import type { ChordAiBar, ChordAiChordSegment, ChordAiReport } from "./types.ts";
+import type { Track } from "@djdesk/domain";
 
 export interface ChordAiChordsOnlyOptions {
   databasePath: string;
@@ -49,9 +51,10 @@ interface StateRow {
   trackPath: string;
 }
 
-interface TrackChordState {
+interface TrackImportState {
   chordCount: number;
   id: string;
+  keyConfidence: Track["confidence"]["key"];
 }
 
 const expectedReportFiles = [
@@ -127,7 +130,7 @@ export async function importChordAiChordsOnlyIntoDatabase(
       continue;
     }
 
-    const track = readTrackChordState(database, row.trackId);
+    const track = readTrackImportState(database, row.trackId);
 
     if (!track) {
       errors.push({
@@ -138,9 +141,12 @@ export async function importChordAiChordsOnlyIntoDatabase(
       continue;
     }
 
-    if (track.chordCount > 0) {
+    const shouldImportChords = track.chordCount === 0;
+    const shouldUpdateKey = shouldUpdateTrackKeyFromReport(track);
+
+    if (!shouldImportChords && !shouldUpdateKey) {
       skipped.push({
-        reason: `Track already has ${track.chordCount} compact chord rows`,
+        reason: `Track already has ${track.chordCount} compact chord rows and a confirmed key`,
         reportPath,
         trackId: row.trackId,
       });
@@ -163,7 +169,12 @@ export async function importChordAiChordsOnlyIntoDatabase(
     try {
       const report = await readReport(reportPath);
 
-      if (importReportForTrack(database, importRunId, row.trackId, report)) {
+      if (
+        importReportForTrack(database, importRunId, row.trackId, report, {
+          shouldImportChords,
+          shouldUpdateKey,
+        })
+      ) {
         importedCount += 1;
       } else {
         skipped.push({
@@ -284,12 +295,13 @@ function finishImportRun(
     );
 }
 
-function readTrackChordState(database: DatabaseSync, trackId: string): TrackChordState | null {
+function readTrackImportState(database: DatabaseSync, trackId: string): TrackImportState | null {
   const row = database
     .prepare(
       `
         SELECT
           t.id,
+          t.key_confidence AS keyConfidence,
           COUNT(c.symbol) AS chordCount
         FROM tracks t
         LEFT JOIN track_chords c ON c.track_id = t.id
@@ -297,7 +309,7 @@ function readTrackChordState(database: DatabaseSync, trackId: string): TrackChor
         GROUP BY t.id
       `,
     )
-    .get(trackId) as unknown as TrackChordState | undefined;
+    .get(trackId) as unknown as TrackImportState | undefined;
 
   return row ?? null;
 }
@@ -307,29 +319,35 @@ function importReportForTrack(
   importRunId: string,
   trackId: string,
   report: ChordAiReport,
+  flags: {
+    shouldImportChords: boolean;
+    shouldUpdateKey: boolean;
+  },
 ): boolean {
   const compactProgression = compactChordProgression(report.chordSegments);
+  const shouldReplaceChords = flags.shouldImportChords && compactProgression.length > 0;
 
-  if (compactProgression.length === 0) {
+  if (!shouldReplaceChords && !flags.shouldUpdateKey) {
     return false;
   }
 
   database.exec("BEGIN IMMEDIATE");
 
   try {
-    replaceCompactChords(database, trackId, compactProgression);
+    if (shouldReplaceChords) {
+      replaceCompactChords(database, trackId, compactProgression);
+    }
+
     replaceRawReport(database, importRunId, trackId, report);
-    database
-      .prepare(
-        `
-          UPDATE tracks
-          SET
-            chords_confidence = 'estimated',
-            updated_at = datetime('now')
-          WHERE id = ?
-        `,
-      )
-      .run(trackId);
+
+    if (shouldReplaceChords) {
+      markTrackChordsImported(database, trackId);
+    }
+
+    if (flags.shouldUpdateKey) {
+      applyReportKeyToTrack(database, trackId, report.key);
+    }
+
     database.exec("COMMIT");
   } catch (error) {
     database.exec("ROLLBACK");
@@ -337,6 +355,20 @@ function importReportForTrack(
   }
 
   return true;
+}
+
+function markTrackChordsImported(database: DatabaseSync, trackId: string): void {
+  database
+    .prepare(
+      `
+        UPDATE tracks
+        SET
+          chords_confidence = 'estimated',
+          updated_at = datetime('now')
+        WHERE id = ?
+      `,
+    )
+    .run(trackId);
 }
 
 function replaceCompactChords(

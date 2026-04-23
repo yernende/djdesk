@@ -8,6 +8,7 @@
     "db:migrate": "node src/db/migrate.ts",
     "dev": "npm run build --workspace @djdesk/domain && node --watch src/index.ts",
     "audio:link": "npm run build --workspace @djdesk/domain && node src/audio/link-cli.ts",
+    "import:chordai:backfill-keys": "npm run build --workspace @djdesk/domain && node src/importers/chordai/backfill-keys-cli.ts",
     "import:chordai": "npm run build --workspace @djdesk/domain && node src/importers/chordai/cli.ts",
     "import:chordai:chords-only": "npm run build --workspace @djdesk/domain && node src/importers/chordai/chords-only-cli.ts",
     "import:rekordbox": "npm run build --workspace @djdesk/domain && node src/importers/rekordbox/cli.ts",

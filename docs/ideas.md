@@ -50,8 +50,8 @@ confidence are available from the focus panel.
 
 Ideas mentioned:
 
-- Confirm or reject key separately from BPM.
-- Confirm or reject chord analysis separately from key and BPM.
+- Confirm key separately from BPM.
+- Confirm chord analysis separately from key and BPM.
 - Edit the normalized key, raw key, mode, modal variant, meter, and BPM.
 - Preserve manual confirmations across repeated imports.
 - Show a review queue for unverified tracks.
@@ -59,7 +59,6 @@ Ideas mentioned:
 
 Open questions:
 
-- Whether rejected values should keep the imported value as historical context.
 - Whether review actions need an audit log.
 
 ## Harmony Notes Triage
@@ -191,7 +190,8 @@ easy to revise as real listening tests reveal better heuristics.
 Ideas mentioned:
 
 - Keep neighbor-section rules for natural keys.
-- Keep same-mode neighbor rules for pure modal tracks.
+- Revisit whether pure modal collection-equivalence rules need a looser or
+  stricter listening-tested exception list.
 - Treat modal-mixture tracks as boundary tracks between two sections.
 - Allow mixture-to-mixture only inside the same boundary.
 - Make compatibility explainable in the UI.
@@ -296,7 +296,7 @@ Ideas mentioned:
 
 - Decide whether the product is `DJ Desk`, `DJ Dashboard`, or another name.
 - Prefer `natural tracks` over `home tracks` in user-facing text.
-- Make boundary, pure modal, modal mixture, unverified, confirmed, rejected, and
+- Make boundary, pure modal, modal mixture, unverified, confirmed, non-440, and
   non-building labels consistent.
 - Keep developer terms in docs when useful, but avoid leaking confusing terms
   into the primary UI.

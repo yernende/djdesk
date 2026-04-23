@@ -38,13 +38,18 @@ Allow manual track creation from the UI:
 - artist, BPM, key, harmony notes, comments, compact chords, tags, and audio are
   optional.
 - missing BPM is stored as `NULL` and shown as unknown.
-- missing key uses `key_unknown = 1` and appears in the unknown-key shelf.
+- missing key uses `key_unknown = 1`, appears in the unknown-key shelf, and is
+  selected from the tonic dropdown rather than through a separate checkbox.
 - manually supplied BPM/key values default to confirmed confidence.
+- tracks that are not aligned to standard A=440 Hz tuning use a separate
+  `non_standard_tuning` flag. This is a caution marker only; it does not hide
+  the track from the circle.
 
 Add structured track editing and verification:
 
 - BPM and key can be edited independently.
-- BPM/key confidence can be changed independently.
+- BPM/key confidence can be changed independently with two states: unverified
+  and confirmed.
 - key editing uses structured tonic, mode, and variant controls instead of a
   free-text parser.
 - comments, harmony notes, compact chords, and tags can be edited from the

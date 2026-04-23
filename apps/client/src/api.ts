@@ -103,6 +103,7 @@ export interface CreateTrackInput {
   comment?: string | null;
   harmonyNotes?: string | null;
   key?: TrackKey | null;
+  nonStandardTuning?: boolean;
   tags?: string[];
   title: string;
 }
@@ -114,6 +115,7 @@ export interface TrackAnalysisPatchInput {
   confidence?: Partial<Pick<TrackAnalysisConfidence, "bpm" | "key">>;
   harmonyNotes?: string | null;
   key?: TrackKey | null;
+  nonStandardTuning?: boolean;
   tags?: string[];
 }
 

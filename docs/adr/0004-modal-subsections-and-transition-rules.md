@@ -42,20 +42,16 @@ Mi natural minor
 
 Use these directed transition rules for the draft-set `Add` warning:
 
-- home can move to the same or neighboring home section.
-- pure modal can move to pure modal with the same mode and same or neighboring
-  home tonic.
-- home can move to pure modal when the home section is the pure modal track's
-  target collection section or a neighboring section.
-- pure modal can move to home when the home section is the pure modal track's
-  target collection section or a neighboring section.
-- home can move to modal mixture when the home section belongs to that
-  modal-mixture boundary.
-- modal mixture can move to home when the home section belongs to that
-  modal-mixture boundary.
-- modal mixture can move to modal mixture only on the same boundary.
-- modal mixture can move to pure modal only for the same home tonic and same
-  mode.
+- home and pure modal tracks both transition by effective diatonic collection
+  section. A pure `La Dorian` track follows the same rules as `Mi natural
+minor`; pure `La Phrygian` follows the same rules as `Re natural minor`.
+- home or pure modal tracks can move to another home or pure modal track when
+  their effective collection sections are the same or neighbors on the circle.
+- raised-leading-tone tracks use the same transition rules as their diatonic
+  home key for now.
+- modal-mixture tracks are boundary tracks. They can move to home or pure modal
+  tracks whose effective collection section is one of the boundary sections.
+- modal-mixture can move to modal-mixture only on the same boundary.
 
 The wheel compatibility coloring stays symmetric for browsing: a zone is shown
 as compatible with the last draft track when at least one track in the zone can

@@ -285,39 +285,23 @@ export function canTransitionProfiles(
   previous: TransitionProfile,
   next: TransitionProfile,
 ): boolean {
-  if (previous.kind === "home" && next.kind === "home") {
-    return circularIndexDistance(previous.section, next.section) <= 1;
+  const previousCollectionSection = getTransitionCollectionSection(previous);
+  const nextCollectionSection = getTransitionCollectionSection(next);
+
+  if (previousCollectionSection !== null && nextCollectionSection !== null) {
+    return circularIndexDistance(previousCollectionSection, nextCollectionSection) <= 1;
   }
 
-  if (previous.kind === "home" && next.kind === "pure-modal") {
-    return circularIndexDistance(previous.section, next.targetSection) <= 1;
+  if (previousCollectionSection !== null && next.kind === "modal-mixture") {
+    return next.boundarySections.includes(previousCollectionSection);
   }
 
-  if (previous.kind === "pure-modal" && next.kind === "home") {
-    return circularIndexDistance(previous.targetSection, next.section) <= 1;
-  }
-
-  if (previous.kind === "pure-modal" && next.kind === "pure-modal") {
-    return (
-      previous.mode === next.mode &&
-      circularIndexDistance(previous.homeSection, next.homeSection) <= 1
-    );
-  }
-
-  if (previous.kind === "home" && next.kind === "modal-mixture") {
-    return next.boundarySections.includes(previous.section);
-  }
-
-  if (previous.kind === "modal-mixture" && next.kind === "home") {
-    return previous.boundarySections.includes(next.section);
+  if (previous.kind === "modal-mixture" && nextCollectionSection !== null) {
+    return previous.boundarySections.includes(nextCollectionSection);
   }
 
   if (previous.kind === "modal-mixture" && next.kind === "modal-mixture") {
     return hasSameBoundary(previous.boundarySections, next.boundarySections);
-  }
-
-  if (previous.kind === "modal-mixture" && next.kind === "pure-modal") {
-    return previous.homeSection === next.homeSection && previous.mode === next.mode;
   }
 
   return false;
@@ -520,6 +504,19 @@ function circularIndexDistance(first: number, second: number): number {
 
 function hasSameBoundary(first: readonly number[], second: readonly number[]): boolean {
   return first.length === second.length && first.every((section) => second.includes(section));
+}
+
+function getTransitionCollectionSection(profile: TransitionProfile): number | null {
+  switch (profile.kind) {
+    case "home":
+      return profile.section;
+    case "pure-modal":
+      return profile.targetSection;
+    case "modal-mixture":
+      return null;
+    default:
+      return assertNever(profile);
+  }
 }
 
 function uniqueIndexes(indexes: readonly number[]): number[] {

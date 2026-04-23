@@ -15,6 +15,7 @@
     "dev:server": "npm run dev --workspace @djdesk/server",
     "db:migrate": "npm run db:migrate --workspace @djdesk/server",
     "audio:link": "npm --workspace @djdesk/server run audio:link --",
+    "import:chordai:backfill-keys": "npm --workspace @djdesk/server run import:chordai:backfill-keys --",
     "import:chordai": "npm --workspace @djdesk/server run import:chordai --",
     "import:chordai:chords-only": "npm --workspace @djdesk/server run import:chordai:chords-only --",
     "import:rekordbox": "npm --workspace @djdesk/server run import:rekordbox --",

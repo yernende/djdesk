@@ -245,7 +245,7 @@ test("home transitions allow only home-neighbor shortcuts", () => {
   );
 });
 
-test("pure modal transitions follow modal vectors", () => {
+test("pure modal transitions use effective collection equivalence", () => {
   assert.equal(
     canKeysTransition(
       { tonic: "D", mode: "natural-minor", variant: "diatonic" },
@@ -301,6 +301,30 @@ test("pure modal transitions follow modal vectors", () => {
     ),
     true,
   );
+
+  assert.equal(
+    canKeysTransition(
+      { tonic: "A", mode: "dorian", variant: "diatonic" },
+      { tonic: "E", mode: "phrygian", variant: "diatonic" },
+    ),
+    true,
+  );
+
+  assert.equal(
+    canKeysTransition(
+      { tonic: "A", mode: "dorian", variant: "diatonic" },
+      { tonic: "D", mode: "mixolydian", variant: "diatonic" },
+    ),
+    true,
+  );
+
+  assert.equal(
+    canKeysTransition(
+      { tonic: "A", mode: "dorian", variant: "diatonic" },
+      { tonic: "A", mode: "phrygian", variant: "diatonic" },
+    ),
+    false,
+  );
 });
 
 test("modal mixture transitions use their own boundary pairs", () => {
@@ -340,6 +364,14 @@ test("modal mixture transitions use their own boundary pairs", () => {
     canKeysTransition(
       { tonic: "A", mode: "dorian", variant: "variable-degree" },
       { tonic: "A", mode: "dorian", variant: "diatonic" },
+    ),
+    true,
+  );
+
+  assert.equal(
+    canKeysTransition(
+      { tonic: "A", mode: "dorian", variant: "variable-degree" },
+      { tonic: "E", mode: "phrygian", variant: "diatonic" },
     ),
     true,
   );

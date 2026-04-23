@@ -49,6 +49,7 @@ export interface CreateTrackInput {
   comment?: string | null;
   harmonyNotes?: string | null;
   key?: TrackKey | null;
+  nonStandardTuning?: boolean;
   tags?: readonly string[];
   title: string;
 }
@@ -60,6 +61,7 @@ export interface TrackAnalysisUpdateInput {
   confidence?: Partial<Pick<TrackAnalysisConfidence, "bpm" | "key">>;
   harmonyNotes?: string | null;
   key?: TrackKey | null;
+  nonStandardTuning?: boolean;
   tags?: readonly string[];
 }
 
@@ -102,6 +104,7 @@ interface TrackRow {
   key_unknown: 0 | 1;
   modal_variant: TrackKey["variant"];
   mode: TrackKey["mode"];
+  non_standard_tuning: 0 | 1;
   title: string;
   tonic: TrackKey["tonic"];
 }
@@ -175,6 +178,7 @@ export function createInMemoryTrackRepository(
         },
         ...(normalized.harmonyNotes ? { harmonyNotes: normalized.harmonyNotes } : {}),
         ...(normalized.comment ? { comment: normalized.comment } : {}),
+        nonStandardTuning: normalized.nonStandardTuning,
         tags: normalized.tags,
       };
 
@@ -345,8 +349,9 @@ export function createSqliteTrackRepository(database: DatabaseSync): TrackReposi
                 raw_key,
                 source_kind,
                 source_identity,
-                key_unknown
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'manual', NULL, ?)
+                key_unknown,
+                non_standard_tuning
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'manual', NULL, ?, ?)
             `,
           )
           .run(
@@ -363,6 +368,7 @@ export function createSqliteTrackRepository(database: DatabaseSync): TrackReposi
             normalized.harmonyNotes,
             normalized.comment,
             normalized.key ? 0 : 1,
+            normalized.nonStandardTuning ? 1 : 0,
           );
 
         replaceTrackChords(database, trackId, normalized.chords);
@@ -542,6 +548,7 @@ export function createSqliteTrackRepository(database: DatabaseSync): TrackReposi
                 bpm_confidence = ?,
                 harmony_notes = ?,
                 comment = ?,
+                non_standard_tuning = ?,
                 updated_at = datetime('now')
               WHERE id = ?
             `,
@@ -556,6 +563,7 @@ export function createSqliteTrackRepository(database: DatabaseSync): TrackReposi
             updated.confidence.bpm,
             updated.harmonyNotes ?? null,
             updated.comment ?? null,
+            updated.nonStandardTuning ? 1 : 0,
             trackId,
           );
 
@@ -722,7 +730,8 @@ function readTracks(
           key_unknown,
           harmony_notes,
           comment,
-          duration_seconds
+          duration_seconds,
+          non_standard_tuning
         FROM tracks
         ${whereClause}
         ORDER BY title COLLATE NOCASE
@@ -999,6 +1008,7 @@ function toTrack(
     ...(row.harmony_notes ? { harmonyNotes: row.harmony_notes } : {}),
     ...(row.comment ? { comment: row.comment } : {}),
     ...(row.duration_seconds ? { durationSeconds: row.duration_seconds } : {}),
+    nonStandardTuning: row.non_standard_tuning === 1,
     tags: tags.get(row.id) ?? [],
   };
 }
@@ -1044,6 +1054,9 @@ function applyTrackAnalysisUpdate(track: Track, input: TrackAnalysisUpdateInput)
     key: nextKey,
     chordProgression: nextChords,
     confidence: nextConfidence,
+    nonStandardTuning: Object.hasOwn(input, "nonStandardTuning")
+      ? normalizeBoolean(input.nonStandardTuning, "Non-standard tuning")
+      : Boolean(track.nonStandardTuning),
     tags: Object.hasOwn(input, "tags") ? normalizeTagList(input.tags ?? []) : track.tags,
   };
 
@@ -1078,6 +1091,7 @@ function normalizeCreateTrackInput(input: CreateTrackInput): Required<CreateTrac
     comment: normalizeOptionalText(input.comment),
     harmonyNotes: normalizeOptionalText(input.harmonyNotes),
     key: normalizeOptionalKey(input.key ?? null),
+    nonStandardTuning: normalizeBoolean(input.nonStandardTuning ?? false, "Non-standard tuning"),
     tags: normalizeTagList(input.tags ?? []),
     title: normalizeRequiredText(input.title, "Track title"),
   };
@@ -1181,17 +1195,21 @@ function normalizeVariant(value: unknown): ModalVariant {
 }
 
 function normalizeVerificationState(value: unknown, label: string): VerificationState {
-  const states = [
-    "estimated",
-    "confirmed",
-    "rejected",
-  ] as const satisfies readonly VerificationState[];
+  const states = ["estimated", "confirmed"] as const satisfies readonly VerificationState[];
 
   if (typeof value === "string" && states.includes(value as VerificationState)) {
     return value as VerificationState;
   }
 
   throw new TrackRepositoryValidationError(`Invalid ${label}`);
+}
+
+function normalizeBoolean(value: unknown, label: string): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  throw new TrackRepositoryValidationError(`${label} must be a boolean`);
 }
 
 function normalizeTextList(values: readonly string[]): string[] {

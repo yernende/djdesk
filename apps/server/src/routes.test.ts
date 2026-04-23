@@ -41,6 +41,7 @@ test("production editing routes persist sets, track edits, and uploaded audio", 
     assert.equal(createdTrack.bpm, null);
     assert.equal(createdTrack.key, null);
     assert.equal(createdTrack.keyLabel, "Unknown key");
+    assert.equal(createdTrack.nonStandardTuning, false);
 
     const set = await injectJson<SetResponse>(app, {
       method: "POST",
@@ -77,6 +78,7 @@ test("production editing routes persist sets, track edits, and uploaded audio", 
           tonic: "A",
           variant: "diatonic",
         },
+        nonStandardTuning: true,
         tags: ["manual", "manual", "tonight"],
       },
       url: `/api/tracks/${encodeURIComponent(createdTrack.id)}/analysis`,
@@ -86,7 +88,24 @@ test("production editing routes persist sets, track edits, and uploaded audio", 
     assert.equal(patchedTrack.keyLabel, "La Dorian");
     assert.equal(patchedTrack.confidence.bpm, "confirmed");
     assert.equal(patchedTrack.confidence.key, "confirmed");
+    assert.equal(patchedTrack.nonStandardTuning, true);
     assert.deepEqual(patchedTrack.tags, ["manual", "tonight"]);
+
+    const unknownConfirmedTrack = await injectJson<TrackResponse>(app, {
+      method: "PATCH",
+      payload: {
+        confidence: {
+          key: "confirmed",
+        },
+        key: null,
+      },
+      url: `/api/tracks/${encodeURIComponent(createdTrack.id)}/analysis`,
+    });
+
+    assert.equal(unknownConfirmedTrack.key, null);
+    assert.equal(unknownConfirmedTrack.keyLabel, "Unknown key");
+    assert.equal(unknownConfirmedTrack.confidence.key, "confirmed");
+    assert.equal(unknownConfirmedTrack.nonStandardTuning, true);
 
     const upload = await app.inject({
       payload: createMultipartPayload({
@@ -360,6 +379,7 @@ interface TrackResponse {
   id: string;
   key: unknown;
   keyLabel: string;
+  nonStandardTuning: boolean;
   tags: string[];
   title: string;
 }

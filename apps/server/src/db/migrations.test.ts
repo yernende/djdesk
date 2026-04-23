@@ -38,6 +38,13 @@ test("production editing migration removes only debug fixtures and makes BPM nul
       sourceKind: "manual",
       title: "Manual track",
     });
+    insertTrack(database, {
+      bpmConfidence: "rejected",
+      id: "trk-old-rejected",
+      keyConfidence: "rejected",
+      sourceKind: "manual",
+      title: "Old rejected track",
+    });
     database
       .prepare("INSERT INTO set_drafts (id, name) VALUES ('set-fixture', 'Fixture set')")
       .run();
@@ -57,6 +64,7 @@ test("production editing migration removes only debug fixtures and makes BPM nul
     assert.equal(countRows(database, "tracks", "source_kind = 'debug-fixture'"), 0);
     assert.equal(countRows(database, "tracks", "id = 'trk-real'"), 1);
     assert.equal(countRows(database, "tracks", "id = 'trk-manual'"), 1);
+    assert.equal(countRows(database, "tracks", "id = 'trk-old-rejected'"), 1);
     assert.equal(countRows(database, "set_draft_tracks", "track_id = 'trk-real'"), 1);
     assert.equal(countRows(database, "set_draft_tracks", "track_id LIKE 'demo-fake-%'"), 0);
 
@@ -69,6 +77,20 @@ test("production editing migration removes only debug fixtures and makes BPM nul
     assert.equal(realTrack.audio_path, "/music/real.flac");
     assert.equal(realTrack.bpm_confidence, "confirmed");
     assert.equal(realTrack.key_confidence, "confirmed");
+
+    const oldRejectedTrack = database
+      .prepare(
+        "SELECT bpm_confidence, key_confidence, non_standard_tuning FROM tracks WHERE id = 'trk-old-rejected'",
+      )
+      .get() as {
+      bpm_confidence: string;
+      key_confidence: string;
+      non_standard_tuning: number;
+    };
+
+    assert.equal(oldRejectedTrack.bpm_confidence, "estimated");
+    assert.equal(oldRejectedTrack.key_confidence, "estimated");
+    assert.equal(oldRejectedTrack.non_standard_tuning, 0);
 
     database.prepare("UPDATE tracks SET bpm = NULL WHERE id = 'trk-manual'").run();
 

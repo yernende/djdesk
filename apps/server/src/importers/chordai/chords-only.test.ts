@@ -89,6 +89,119 @@ test("skips tracks that already have compact chords", async () => {
 
     assert.equal(result.importedCount, 0);
     assert.equal(result.skipped.length, 1);
+    assert.equal(
+      result.skipped[0]?.reason,
+      "Track already has 1 compact chord rows and a confirmed key",
+    );
+    assert.equal(chord.symbol, "Manual");
+  } finally {
+    database.close();
+    await rm(fixture.rootPath, {
+      force: true,
+      recursive: true,
+    });
+  }
+});
+
+test("imports key from report for unknown-key tracks without filling BPM", async () => {
+  const fixture = await createChordsOnlyFixture();
+  const database = new DatabaseSync(fixture.databasePath);
+
+  try {
+    database.exec("PRAGMA foreign_keys = ON");
+    await runMigrations(database);
+    insertPlannerTrack(database, {
+      bpm: null,
+      bpmConfidence: "estimated",
+      keyConfidence: "estimated",
+      keyUnknown: 1,
+      mode: "major",
+      rawKey: "unknown",
+      sourceKind: "spotify",
+      sourceIdentity: "spotify-fixture",
+      tonic: "C",
+    });
+
+    const result = await importChordAiChordsOnlyIntoDatabase(database, {
+      databasePath: fixture.databasePath,
+      manifestPath: fixture.manifestPath,
+      statePath: fixture.statePath,
+    });
+
+    const track = database.prepare("SELECT * FROM tracks WHERE id = ?").get("trk-rbx-fixture") as {
+      bpm: number | null;
+      key_confidence: string;
+      key_unknown: number;
+      mode: string;
+      raw_key: string;
+      tonic: string;
+    };
+    const chords = database
+      .prepare("SELECT symbol FROM track_chords WHERE track_id = ? ORDER BY position")
+      .all("trk-rbx-fixture") as { symbol: string }[];
+
+    assert.equal(result.importedCount, 1);
+    assert.equal(result.skipped.length, 0);
+    assert.equal(track.bpm, null);
+    assert.equal(track.tonic, "G#");
+    assert.equal(track.mode, "major");
+    assert.equal(track.raw_key, "Ab");
+    assert.equal(track.key_unknown, 0);
+    assert.equal(track.key_confidence, "estimated");
+    assert.deepEqual(
+      chords.map((chord) => chord.symbol),
+      ["Ebm", "Ab/G#"],
+    );
+  } finally {
+    database.close();
+    await rm(fixture.rootPath, {
+      force: true,
+      recursive: true,
+    });
+  }
+});
+
+test("updates unknown key from report even when compact chords already exist", async () => {
+  const fixture = await createChordsOnlyFixture();
+  const database = new DatabaseSync(fixture.databasePath);
+
+  try {
+    database.exec("PRAGMA foreign_keys = ON");
+    await runMigrations(database);
+    insertPlannerTrack(database, {
+      bpm: null,
+      bpmConfidence: "estimated",
+      keyConfidence: "estimated",
+      keyUnknown: 1,
+      mode: "major",
+      rawKey: "unknown",
+      sourceKind: "spotify",
+      sourceIdentity: "spotify-fixture",
+      tonic: "C",
+    });
+    database
+      .prepare("INSERT INTO track_chords (track_id, position, symbol) VALUES (?, 0, 'Manual')")
+      .run("trk-rbx-fixture");
+
+    const result = await importChordAiChordsOnlyIntoDatabase(database, {
+      databasePath: fixture.databasePath,
+      manifestPath: fixture.manifestPath,
+      statePath: fixture.statePath,
+    });
+
+    const track = database.prepare("SELECT * FROM tracks WHERE id = ?").get("trk-rbx-fixture") as {
+      key_unknown: number;
+      raw_key: string;
+      tonic: string;
+    };
+    const chord = database
+      .prepare("SELECT symbol FROM track_chords WHERE track_id = ? ORDER BY position LIMIT 1")
+      .get("trk-rbx-fixture") as { symbol: string };
+
+    assert.equal(result.importedCount, 1);
+    assert.equal(track.key_unknown, 0);
+    assert.equal(track.tonic, "G#");
+    assert.equal(track.raw_key, "Ab");
     assert.equal(chord.symbol, "Manual");
   } finally {
     database.close();
@@ -174,7 +287,20 @@ async function createChordsOnlyFixture(): Promise<{
   };
 }
 
-function insertPlannerTrack(database: DatabaseSync): void {
+function insertPlannerTrack(
+  database: DatabaseSync,
+  overrides: {
+    bpm?: number | null;
+    bpmConfidence?: string;
+    keyConfidence?: string;
+    keyUnknown?: 0 | 1;
+    mode?: string;
+    rawKey?: string;
+    sourceIdentity?: string;
+    sourceKind?: string;
+    tonic?: string;
+  } = {},
+): void {
   database
     .prepare(
       `
@@ -191,24 +317,26 @@ function insertPlannerTrack(database: DatabaseSync): void {
           chords_confidence,
           raw_key,
           source_kind,
-          source_identity
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          source_identity,
+          key_unknown
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
     )
     .run(
       "trk-rbx-fixture",
       "Fixture Song",
       "Fixture Artist",
-      77,
-      "F",
-      "major",
+      overrides.bpm === undefined ? 77 : overrides.bpm,
+      overrides.tonic ?? "F",
+      overrides.mode ?? "major",
       "diatonic",
-      "confirmed",
-      "confirmed",
+      overrides.keyConfidence ?? "confirmed",
+      overrides.bpmConfidence ?? "confirmed",
       "estimated",
-      "F",
-      "rekordbox",
-      "rekordbox-fixture",
+      overrides.rawKey ?? "F",
+      overrides.sourceKind ?? "rekordbox",
+      overrides.sourceIdentity ?? "rekordbox-fixture",
+      overrides.keyUnknown ?? 0,
     );
 }
 
