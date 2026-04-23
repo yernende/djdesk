@@ -1551,6 +1551,34 @@ h2 {
   gap: 8px;
 }
 
+.bpm-input-row {
+  display: grid;
+  align-items: stretch;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 6px;
+}
+
+.bpm-adjust-button {
+  min-width: 48px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid rgba(23, 27, 24, 0.16);
+  border-radius: 8px;
+  background: #fffaf0;
+  color: #171b18;
+  cursor: pointer;
+  font-size: 0.74rem;
+  font-weight: 950;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.bpm-adjust-button:disabled {
+  background: #c8c0b2;
+  color: #6d6960;
+  cursor: not-allowed;
+}
+
 .checkbox-field {
   align-content: center;
   grid-template-columns: auto minmax(0, 1fr);

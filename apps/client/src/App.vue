@@ -232,6 +232,14 @@ const browserTitle = computed(() => `${browserTracks.value.length} tracks`);
 
 const browserEyebrow = computed(() => selectedLabel.value);
 
+const adjustableBpmDraft = computed(() => {
+  try {
+    return parseOptionalNumberInput(bpmDraft.value);
+  } catch {
+    return null;
+  }
+});
+
 const confirmedCount = computed(
   () => visibleTracks.value.filter((track) => track.confidence.key === "confirmed").length,
 );
@@ -972,6 +980,19 @@ async function saveBpmDraft(value = bpmDraft.value): Promise<void> {
   await patchSelectedTrack({
     bpm: nextBpm,
   });
+}
+
+async function adjustSelectedBpm(multiplier: number): Promise<void> {
+  const currentBpm = adjustableBpmDraft.value;
+
+  if (currentBpm === null) {
+    return;
+  }
+
+  const nextValue = formatEditableBpm(currentBpm * multiplier);
+
+  bpmDraft.value = nextValue;
+  await saveBpmDraft(nextValue);
 }
 
 async function saveBpmDraftFromEvent(event: Event): Promise<void> {
@@ -2343,6 +2364,10 @@ function formatBpmValue(bpm: number | null): string {
   return bpm === null ? "Unknown" : String(bpm);
 }
 
+function formatEditableBpm(bpm: number): string {
+  return String(Number(bpm.toFixed(3)));
+}
+
 function placementLaneLabel(lane: PlacementLane | undefined): string {
   switch (lane) {
     case "home":
@@ -3012,18 +3037,40 @@ function assertNever(value: never): never {
             <div class="editor-grid">
               <label>
                 <span>BPM</span>
-                <input
-                  v-model="bpmDraft"
-                  type="number"
-                  min="1"
-                  step="0.01"
-                  placeholder="Unknown"
-                  :disabled="isTrackSaving"
-                  @focus="focusBpmDraft"
-                  @blur="blurBpmDraft"
-                  @change="saveBpmDraftFromEvent"
-                  @keydown.enter.prevent="saveBpmDraftFromEvent"
-                />
+                <div class="bpm-input-row">
+                  <input
+                    v-model="bpmDraft"
+                    type="number"
+                    min="1"
+                    step="0.01"
+                    placeholder="Unknown"
+                    :disabled="isTrackSaving"
+                    @focus="focusBpmDraft"
+                    @blur="blurBpmDraft"
+                    @change="saveBpmDraftFromEvent"
+                    @keydown.enter.prevent="saveBpmDraftFromEvent"
+                  />
+                  <button
+                    type="button"
+                    class="bpm-adjust-button"
+                    :disabled="adjustableBpmDraft === null || isTrackSaving"
+                    title="Halve BPM"
+                    @mousedown.prevent
+                    @click="adjustSelectedBpm(0.5)"
+                  >
+                    ÷2
+                  </button>
+                  <button
+                    type="button"
+                    class="bpm-adjust-button"
+                    :disabled="adjustableBpmDraft === null || isTrackSaving"
+                    title="Double BPM"
+                    @mousedown.prevent
+                    @click="adjustSelectedBpm(2)"
+                  >
+                    ×2
+                  </button>
+                </div>
               </label>
               <label>
                 <span>BPM state</span>
