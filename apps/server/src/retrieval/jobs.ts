@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { Track } from "@djdesk/domain";
+import type { Track, TrackAudioQuality } from "@djdesk/domain";
 
 import type { TrackRepository } from "../repositories/tracks.ts";
 import type {
@@ -42,6 +42,7 @@ export interface RetrievalManager {
 }
 
 export function createRetrievalManager(input: {
+  analyzeAudioQuality?: (audioPath: string) => Promise<TrackAudioQuality>;
   retriever: TrackRetriever;
   tracks: TrackRepository;
 }): RetrievalManager {
@@ -139,7 +140,19 @@ export function createRetrievalManager(input: {
       return false;
     }
 
-    job.linkedTrack = track;
+    let linkedTrack = track;
+
+    if (input.analyzeAudioQuality) {
+      try {
+        const quality = await input.analyzeAudioQuality(audioPath);
+
+        linkedTrack = (await input.tracks.updateTrackAudioQuality(job.trackId, quality)) ?? track;
+      } catch (error) {
+        appendMessage(job, `Audio quality: ${getErrorMessage(error)}`);
+      }
+    }
+
+    job.linkedTrack = linkedTrack;
     job.stage = "linked";
     job.error = null;
     appendMessage(job, `Linked audio: ${audioPath}`);

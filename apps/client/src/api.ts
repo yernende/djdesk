@@ -31,6 +31,84 @@ export interface SetDraftView {
   id: string;
   name: string;
   trackIds: string[];
+  revision?: number;
+}
+
+export interface WorkspaceSession {
+  workspaceId: string | null;
+  csrfToken: string | null;
+}
+
+let publicMode = false;
+let workspaceSession: WorkspaceSession = { workspaceId: null, csrfToken: null };
+let newWorkspaceSecret: { workspaceId: string; secret: string } | null = null;
+
+export async function fetchAppConfig(): Promise<{ mode: "local" | "public" }> {
+  const config = await parseJsonResponse<{ mode: "local" | "public" }>(await fetch("/api/config"));
+  publicMode = config.mode === "public";
+  return config;
+}
+
+export async function fetchWorkspaceSession(): Promise<WorkspaceSession> {
+  workspaceSession = await parseJsonResponse<WorkspaceSession>(await fetch("/api/session"));
+  return workspaceSession;
+}
+
+export async function exchangeWorkspaceLink(
+  workspaceId: string,
+  secret: string,
+): Promise<WorkspaceSession> {
+  workspaceSession = await writeJson<WorkspaceSession>("/api/session/exchange", "POST", {
+    workspaceId,
+    secret,
+  });
+  return workspaceSession;
+}
+
+export async function rotateWorkspaceLink(): Promise<void> {
+  const result = await writeJson<WorkspaceSession & { workspaceId: string; secret: string }>(
+    "/api/workspace/rotate",
+    "POST",
+    {},
+  );
+  workspaceSession = { workspaceId: result.workspaceId, csrfToken: result.csrfToken };
+  newWorkspaceSecret = { workspaceId: result.workspaceId, secret: result.secret };
+}
+
+export function takeNewWorkspaceSecret(): { workspaceId: string; secret: string } | null {
+  const result = newWorkspaceSecret;
+  newWorkspaceSecret = null;
+  return result;
+}
+
+export class ApiError extends Error {
+  status: number;
+  code: string | undefined;
+  params: Record<string, string | number> | undefined;
+  constructor(
+    status: number,
+    message: string,
+    code?: string,
+    params?: Record<string, string | number>,
+  ) {
+    super(message);
+    this.status = status;
+    this.code = code;
+    this.params = params;
+  }
+}
+
+async function writeJson<T>(url: string, method: string, body: unknown): Promise<T> {
+  return parseJsonResponse<T>(
+    await fetch(url, {
+      method,
+      headers: {
+        "content-type": "application/json",
+        ...(workspaceSession.csrfToken ? { "x-csrf-token": workspaceSession.csrfToken } : {}),
+      },
+      body: JSON.stringify(body),
+    }),
+  );
 }
 
 export interface SetDraftListResponse {
@@ -137,51 +215,59 @@ export async function fetchSets(): Promise<SetDraftListResponse> {
   return parseJsonResponse<SetDraftListResponse>(response);
 }
 
-export async function createSet(name: string): Promise<SetDraftView> {
-  const response = await fetch("/api/sets", {
-    body: JSON.stringify({ name }),
-    headers: {
-      "content-type": "application/json",
-    },
-    method: "POST",
-  });
-
-  return parseJsonResponse<SetDraftView>(response);
+export async function createSet(
+  name: string,
+  trackIds: readonly string[] = [],
+  id = crypto.randomUUID(),
+): Promise<SetDraftView> {
+  if (publicMode && !workspaceSession.workspaceId) {
+    const result = await writeJson<
+      WorkspaceSession & { workspaceId: string; secret: string; set: SetDraftView }
+    >("/api/workspaces", "POST", { name, trackIds, id });
+    workspaceSession = { workspaceId: result.workspaceId, csrfToken: result.csrfToken };
+    newWorkspaceSecret = { workspaceId: result.workspaceId, secret: result.secret };
+    return result.set;
+  }
+  const set = await writeJson<SetDraftView>("/api/sets", "POST", { name, trackIds, id });
+  if (!publicMode && trackIds.length) return replaceSetTracks(set.id, trackIds);
+  return set;
 }
 
-export async function renameSet(setId: string, name: string): Promise<SetDraftView> {
-  const response = await fetch(`/api/sets/${encodeURIComponent(setId)}`, {
-    body: JSON.stringify({ name }),
-    headers: {
-      "content-type": "application/json",
-    },
-    method: "PATCH",
+export async function renameSet(
+  setId: string,
+  name: string,
+  revision?: number,
+): Promise<SetDraftView> {
+  return writeJson<SetDraftView>(`/api/sets/${encodeURIComponent(setId)}`, "PATCH", {
+    name,
+    revision,
   });
-
-  return parseJsonResponse<SetDraftView>(response);
 }
 
 export async function replaceSetTracks(
   setId: string,
   trackIds: readonly string[],
+  revision?: number,
 ): Promise<SetDraftView> {
-  const response = await fetch(`/api/sets/${encodeURIComponent(setId)}/tracks`, {
-    body: JSON.stringify({ trackIds }),
-    headers: {
-      "content-type": "application/json",
-    },
-    method: "PUT",
+  return writeJson<SetDraftView>(`/api/sets/${encodeURIComponent(setId)}/tracks`, "PUT", {
+    trackIds,
+    revision,
   });
-
-  return parseJsonResponse<SetDraftView>(response);
 }
 
-export async function deleteSet(setId: string): Promise<void> {
-  const response = await fetch(`/api/sets/${encodeURIComponent(setId)}`, {
-    method: "DELETE",
-  });
+export async function deleteSet(setId: string, revision?: number): Promise<void> {
+  await writeJson(`/api/sets/${encodeURIComponent(setId)}`, "DELETE", { revision });
+}
 
-  await parseJsonResponse(response);
+export async function saveSetSnapshot(set: SetDraftView, revision?: number): Promise<SetDraftView> {
+  if (publicMode)
+    return writeJson<SetDraftView>(`/api/sets/${encodeURIComponent(set.id)}`, "PATCH", {
+      name: set.name,
+      trackIds: set.trackIds,
+      revision,
+    });
+  await renameSet(set.id, set.name);
+  return replaceSetTracks(set.id, set.trackIds);
 }
 
 export async function createTrack(input: CreateTrackInput): Promise<TrackView> {
@@ -305,9 +391,18 @@ export async function fetchCircle(): Promise<CircleResponse> {
 
 async function parseJsonResponse<Response>(response: globalThis.Response): Promise<Response> {
   if (!response.ok) {
-    const error = (await response.json().catch(() => null)) as { message?: string } | null;
+    const error = (await response.json().catch(() => null)) as {
+      message?: string;
+      code?: string;
+      params?: Record<string, string | number>;
+    } | null;
 
-    throw new Error(error?.message ?? `API request failed: ${response.status}`);
+    throw new ApiError(
+      response.status,
+      error?.message ?? `API request failed: ${response.status}`,
+      error?.code,
+      error?.params,
+    );
   }
 
   return response.json() as Promise<Response>;

@@ -4,6 +4,8 @@ import type { DatabaseSync } from "node:sqlite";
 
 import { openDatabase } from "../db/database.ts";
 import { runMigrations } from "../db/migrations.ts";
+import { analyzeAudioQuality } from "./quality.ts";
+import { writeTrackAudioQuality } from "./quality-backfill.ts";
 
 export interface AudioLinkOptions {
   databasePath: string;
@@ -64,7 +66,19 @@ export async function linkAudioFilesIntoDatabase(
   const unmatched: AudioLinkTrack[] = [];
   const updateTrack = database.prepare(`
     UPDATE tracks
-    SET audio_path = ?, updated_at = datetime('now')
+    SET
+      audio_path = ?,
+      audio_codec = NULL,
+      audio_container = NULL,
+      audio_sample_rate_hz = NULL,
+      audio_bit_depth = NULL,
+      audio_bitrate_kbps = NULL,
+      audio_bitrate_mode = 'unknown',
+      audio_quality_status = 'unknown',
+      audio_lossy_high_bitrate = 0,
+      audio_quality_analyzed_at = NULL,
+      audio_quality_probe_error = NULL,
+      updated_at = datetime('now')
     WHERE id = ?
   `);
 
@@ -93,12 +107,25 @@ export async function linkAudioFilesIntoDatabase(
     throw error;
   }
 
+  await updateLinkedAudioQuality(database, linked);
+
   return {
     filesScanned: candidates.length,
     linked,
     roots,
     unmatched,
   };
+}
+
+async function updateLinkedAudioQuality(
+  database: DatabaseSync,
+  linked: readonly AudioLinkMatch[],
+): Promise<void> {
+  for (const match of linked) {
+    const quality = await analyzeAudioQuality(match.audioPath);
+
+    writeTrackAudioQuality(database, match.trackId, quality);
+  }
 }
 
 export function findBestAudioFileForTrack(

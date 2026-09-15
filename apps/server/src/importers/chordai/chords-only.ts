@@ -6,6 +6,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { openDatabase } from "../../db/database.ts";
 import { runMigrations } from "../../db/migrations.ts";
 import { parseCsv } from "./csv.ts";
+import { applyReportBpmToTrack, shouldUpdateTrackBpmFromReport } from "./bpm-sync.ts";
 import { applyReportKeyToTrack, shouldUpdateTrackKeyFromReport } from "./key-sync.ts";
 import { compactChordProgression, parseChordAiReport } from "./parse.ts";
 import type { ChordAiBar, ChordAiChordSegment, ChordAiReport } from "./types.ts";
@@ -52,6 +53,7 @@ interface StateRow {
 }
 
 interface TrackImportState {
+  bpmConfidence: Track["confidence"]["bpm"];
   chordCount: number;
   id: string;
   keyConfidence: Track["confidence"]["key"];
@@ -142,11 +144,12 @@ export async function importChordAiChordsOnlyIntoDatabase(
     }
 
     const shouldImportChords = track.chordCount === 0;
+    const shouldUpdateBpm = shouldUpdateTrackBpmFromReport(track);
     const shouldUpdateKey = shouldUpdateTrackKeyFromReport(track);
 
-    if (!shouldImportChords && !shouldUpdateKey) {
+    if (!shouldImportChords && !shouldUpdateKey && !shouldUpdateBpm) {
       skipped.push({
-        reason: `Track already has ${track.chordCount} compact chord rows and a confirmed key`,
+        reason: `Track already has ${track.chordCount} compact chord rows, confirmed BPM, and a confirmed key`,
         reportPath,
         trackId: row.trackId,
       });
@@ -172,6 +175,7 @@ export async function importChordAiChordsOnlyIntoDatabase(
       if (
         importReportForTrack(database, importRunId, row.trackId, report, {
           shouldImportChords,
+          shouldUpdateBpm,
           shouldUpdateKey,
         })
       ) {
@@ -301,6 +305,7 @@ function readTrackImportState(database: DatabaseSync, trackId: string): TrackImp
       `
         SELECT
           t.id,
+          t.bpm_confidence AS bpmConfidence,
           t.key_confidence AS keyConfidence,
           COUNT(c.symbol) AS chordCount
         FROM tracks t
@@ -321,13 +326,14 @@ function importReportForTrack(
   report: ChordAiReport,
   flags: {
     shouldImportChords: boolean;
+    shouldUpdateBpm: boolean;
     shouldUpdateKey: boolean;
   },
 ): boolean {
   const compactProgression = compactChordProgression(report.chordSegments);
   const shouldReplaceChords = flags.shouldImportChords && compactProgression.length > 0;
 
-  if (!shouldReplaceChords && !flags.shouldUpdateKey) {
+  if (!shouldReplaceChords && !flags.shouldUpdateKey && !flags.shouldUpdateBpm) {
     return false;
   }
 
@@ -342,6 +348,10 @@ function importReportForTrack(
 
     if (shouldReplaceChords) {
       markTrackChordsImported(database, trackId);
+    }
+
+    if (flags.shouldUpdateBpm) {
+      applyReportBpmToTrack(database, trackId, report.bpm);
     }
 
     if (flags.shouldUpdateKey) {

@@ -14,11 +14,14 @@ test("production editing routes persist sets, track edits, and uploaded audio", 
   const audioUploadDir = join(rootPath, "audio");
   const app = await createServer({
     audioUploadDir,
+    chordAiKitRoot: "/home/example/Documents/ChordAI Pipeline Kit",
     databasePath,
     djToolRoot: "/tmp/dj-tool",
     host: "127.0.0.1",
     port: 0,
     seedSampleData: false,
+    windowsFlashStagingDir: "/home/example/Documents/djdesk/windows-flash-import",
+    windowsHost: "windows",
   });
 
   try {
@@ -126,6 +129,8 @@ test("production editing routes persist sets, track edits, and uploaded audio", 
 
     assert.equal(uploadedTrack.audioAvailable, true);
     assert.equal(uploadedTrack.audioFileName, "Город 312 - Останусь.flac");
+    assert.ok(uploadedTrack.audioQuality);
+    assert.match(uploadedTrack.audioQuality.status, /^(lossy|unknown)$/);
     assert.equal((await stat(join(audioUploadDir, "Город 312 - Останусь.flac"))).isFile(), true);
     assert.deepEqual(
       await readFile(join(audioUploadDir, "Город 312 - Останусь.flac"), "utf8"),
@@ -179,11 +184,14 @@ test("retrieval routes select candidates, link audio, retry, cancel, and expose 
   const app = await createServer(
     {
       audioUploadDir,
+      chordAiKitRoot: "/home/example/Documents/ChordAI Pipeline Kit",
       databasePath,
       djToolRoot: "/tmp/dj-tool",
       host: "127.0.0.1",
       port: 0,
       seedSampleData: false,
+      windowsFlashStagingDir: "/home/example/Documents/djdesk/windows-flash-import",
+      windowsHost: "windows",
     },
     {
       retriever,
@@ -229,6 +237,7 @@ test("retrieval routes select candidates, link audio, retry, cancel, and expose 
     const completedYandexJob = await waitForRetrievalStage(app, yandexJob.id, "linked");
 
     assert.equal(completedYandexJob.linkedTrack?.audioFileName, "Yandex Result.flac");
+    assert.ok(completedYandexJob.linkedTrack?.audioQuality);
 
     const yandexAudio = await app.inject({
       headers: {
@@ -271,6 +280,7 @@ test("retrieval routes select candidates, link audio, retry, cancel, and expose 
     const completedSpotifyJob = await waitForRetrievalStage(app, spotifyJob.id, "linked");
 
     assert.equal(completedSpotifyJob.linkedTrack?.audioFileName, "Spotify Result.flac");
+    assert.ok(completedSpotifyJob.linkedTrack?.audioQuality);
 
     const spotifySkipTrack = await injectJson<TrackResponse>(app, {
       method: "POST",
@@ -370,6 +380,10 @@ interface SetResponse {
 interface TrackResponse {
   audioAvailable: boolean;
   audioFileName: string | null;
+  audioQuality?: {
+    probeError: string | null;
+    status: string;
+  };
   audioUrl: string;
   bpm: number | null;
   confidence: {

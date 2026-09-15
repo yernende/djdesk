@@ -8,6 +8,7 @@ import {
   type ModalVariant,
   type Track,
   type TrackAnalysisConfidence,
+  type TrackAudioQuality,
   type TrackKey,
   type VerificationState,
 } from "@djdesk/domain";
@@ -25,6 +26,7 @@ export interface TrackRepository {
   replaceSetDraftTracks(setId: string, trackIds: readonly string[]): Promise<SetDraft | null>;
   updateTrackAnalysis(trackId: string, input: TrackAnalysisUpdateInput): Promise<Track | null>;
   updateTrackAudioPath(trackId: string, audioPath: string): Promise<Track | null>;
+  updateTrackAudioQuality(trackId: string, quality: TrackAudioQuality): Promise<Track | null>;
 }
 
 export interface CreateSetDraftInput {
@@ -91,7 +93,17 @@ export interface TrackChordSegment {
 }
 
 interface TrackRow {
+  audio_bit_depth: number | null;
+  audio_bitrate_kbps: number | null;
+  audio_bitrate_mode: TrackAudioQuality["bitrateMode"];
+  audio_codec: string | null;
+  audio_container: string | null;
+  audio_lossy_high_bitrate: 0 | 1;
   audio_path: string | null;
+  audio_quality_analyzed_at: string | null;
+  audio_quality_probe_error: string | null;
+  audio_quality_status: TrackAudioQuality["status"];
+  audio_sample_rate_hz: number | null;
   artist: string | null;
   bpm: number | null;
   bpm_confidence: Track["confidence"]["bpm"];
@@ -289,9 +301,27 @@ export function createInMemoryTrackRepository(
         return null;
       }
 
+      const { audioQuality: _audioQuality, ...trackWithoutAudioQuality } = track;
+      const updated = {
+        ...trackWithoutAudioQuality,
+        audioPath,
+      };
+
+      tracks[index] = updated;
+
+      return updated;
+    },
+    async updateTrackAudioQuality(trackId, quality) {
+      const index = tracks.findIndex((track) => track.id === trackId);
+      const track = tracks[index];
+
+      if (index === -1 || !track) {
+        return null;
+      }
+
       const updated = {
         ...track,
-        audioPath,
+        audioQuality: quality,
       };
 
       tracks[index] = updated;
@@ -597,11 +627,63 @@ export function createSqliteTrackRepository(database: DatabaseSync): TrackReposi
         .prepare(
           `
             UPDATE tracks
-            SET audio_path = ?, updated_at = datetime('now')
+            SET
+              audio_path = ?,
+              audio_codec = NULL,
+              audio_container = NULL,
+              audio_sample_rate_hz = NULL,
+              audio_bit_depth = NULL,
+              audio_bitrate_kbps = NULL,
+              audio_bitrate_mode = 'unknown',
+              audio_quality_status = 'unknown',
+              audio_lossy_high_bitrate = 0,
+              audio_quality_analyzed_at = NULL,
+              audio_quality_probe_error = NULL,
+              updated_at = datetime('now')
             WHERE id = ?
           `,
         )
         .run(audioPath, trackId);
+
+      if (result.changes === 0) {
+        return null;
+      }
+
+      return readTrackById(database, trackId);
+    },
+    async updateTrackAudioQuality(trackId, quality) {
+      const result = database
+        .prepare(
+          `
+            UPDATE tracks
+            SET
+              audio_codec = ?,
+              audio_container = ?,
+              audio_sample_rate_hz = ?,
+              audio_bit_depth = ?,
+              audio_bitrate_kbps = ?,
+              audio_bitrate_mode = ?,
+              audio_quality_status = ?,
+              audio_lossy_high_bitrate = ?,
+              audio_quality_analyzed_at = ?,
+              audio_quality_probe_error = ?,
+              updated_at = datetime('now')
+            WHERE id = ?
+          `,
+        )
+        .run(
+          quality.codec,
+          quality.container,
+          quality.sampleRateHz,
+          quality.bitDepth,
+          quality.bitrateKbps,
+          quality.bitrateMode,
+          quality.status,
+          quality.isHighBitrateLossy ? 1 : 0,
+          quality.analyzedAt,
+          quality.probeError,
+          trackId,
+        );
 
       if (result.changes === 0) {
         return null;
@@ -719,6 +801,16 @@ function readTracks(
           id,
           title,
           audio_path,
+          audio_codec,
+          audio_container,
+          audio_sample_rate_hz,
+          audio_bit_depth,
+          audio_bitrate_kbps,
+          audio_bitrate_mode,
+          audio_quality_status,
+          audio_lossy_high_bitrate,
+          audio_quality_analyzed_at,
+          audio_quality_probe_error,
           artist,
           bpm,
           tonic,
@@ -991,11 +1083,13 @@ function toTrack(
           tonic: row.tonic,
           variant: row.modal_variant,
         };
+  const audioQuality = toAudioQuality(row);
 
   return {
     id: row.id,
     title: row.title,
     ...(row.audio_path ? { audioPath: row.audio_path } : {}),
+    ...(audioQuality ? { audioQuality } : {}),
     ...(row.artist ? { artist: row.artist } : {}),
     bpm: row.bpm,
     key,
@@ -1010,6 +1104,35 @@ function toTrack(
     ...(row.duration_seconds ? { durationSeconds: row.duration_seconds } : {}),
     nonStandardTuning: row.non_standard_tuning === 1,
     tags: tags.get(row.id) ?? [],
+  };
+}
+
+function toAudioQuality(row: TrackRow): TrackAudioQuality | undefined {
+  if (
+    !row.audio_quality_analyzed_at &&
+    !row.audio_quality_probe_error &&
+    row.audio_quality_status === "unknown" &&
+    !row.audio_codec &&
+    !row.audio_container &&
+    row.audio_sample_rate_hz === null &&
+    row.audio_bit_depth === null &&
+    row.audio_bitrate_kbps === null &&
+    row.audio_lossy_high_bitrate === 0
+  ) {
+    return undefined;
+  }
+
+  return {
+    analyzedAt: row.audio_quality_analyzed_at,
+    bitDepth: row.audio_bit_depth,
+    bitrateKbps: row.audio_bitrate_kbps,
+    bitrateMode: row.audio_bitrate_mode,
+    codec: row.audio_codec,
+    container: row.audio_container,
+    isHighBitrateLossy: row.audio_lossy_high_bitrate === 1,
+    probeError: row.audio_quality_probe_error,
+    sampleRateHz: row.audio_sample_rate_hz,
+    status: row.audio_quality_status,
   };
 }
 

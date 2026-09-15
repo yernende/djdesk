@@ -91,7 +91,7 @@ test("skips tracks that already have compact chords", async () => {
     assert.equal(result.skipped.length, 1);
     assert.equal(
       result.skipped[0]?.reason,
-      "Track already has 1 compact chord rows and a confirmed key",
+      "Track already has 1 compact chord rows, confirmed BPM, and a confirmed key",
     );
     assert.equal(chord.symbol, "Manual");
   } finally {
@@ -103,7 +103,7 @@ test("skips tracks that already have compact chords", async () => {
   }
 });
 
-test("imports key from report for unknown-key tracks without filling BPM", async () => {
+test("imports key and BPM from report for tracks with unconfirmed analysis", async () => {
   const fixture = await createChordsOnlyFixture();
   const database = new DatabaseSync(fixture.databasePath);
 
@@ -130,6 +130,7 @@ test("imports key from report for unknown-key tracks without filling BPM", async
 
     const track = database.prepare("SELECT * FROM tracks WHERE id = ?").get("trk-rbx-fixture") as {
       bpm: number | null;
+      bpm_confidence: string;
       key_confidence: string;
       key_unknown: number;
       mode: string;
@@ -142,7 +143,8 @@ test("imports key from report for unknown-key tracks without filling BPM", async
 
     assert.equal(result.importedCount, 1);
     assert.equal(result.skipped.length, 0);
-    assert.equal(track.bpm, null);
+    assert.equal(track.bpm, 130);
+    assert.equal(track.bpm_confidence, "estimated");
     assert.equal(track.tonic, "G#");
     assert.equal(track.mode, "major");
     assert.equal(track.raw_key, "Ab");
@@ -190,6 +192,7 @@ test("updates unknown key from report even when compact chords already exist", a
     });
 
     const track = database.prepare("SELECT * FROM tracks WHERE id = ?").get("trk-rbx-fixture") as {
+      bpm: number | null;
       key_unknown: number;
       raw_key: string;
       tonic: string;
@@ -199,6 +202,7 @@ test("updates unknown key from report even when compact chords already exist", a
       .get("trk-rbx-fixture") as { symbol: string };
 
     assert.equal(result.importedCount, 1);
+    assert.equal(track.bpm, 130);
     assert.equal(track.key_unknown, 0);
     assert.equal(track.tonic, "G#");
     assert.equal(track.raw_key, "Ab");
@@ -237,6 +241,64 @@ test("skips reports with no compact chords without failing the import", async ()
     assert.equal(result.errors.length, 0);
     assert.equal(result.skipped.length, 1);
     assert.equal(result.skipped[0]?.reason, "Report has no compact chord progression");
+    assert.deepEqual(chords, []);
+  } finally {
+    database.close();
+    await rm(fixture.rootPath, {
+      force: true,
+      recursive: true,
+    });
+  }
+});
+
+test("imports BPM and key even when report has no compact chords", async () => {
+  const fixture = await createChordsOnlyFixture();
+  const database = new DatabaseSync(fixture.databasePath);
+
+  try {
+    database.exec("PRAGMA foreign_keys = ON");
+    await runMigrations(database);
+    insertPlannerTrack(database, {
+      bpm: null,
+      bpmConfidence: "estimated",
+      keyConfidence: "estimated",
+      keyUnknown: 1,
+      mode: "major",
+      rawKey: "unknown",
+      sourceKind: "spotify",
+      sourceIdentity: "spotify-fixture",
+      tonic: "C",
+    });
+    await writeNoChordReport(fixture.reportPath);
+
+    const result = await importChordAiChordsOnlyIntoDatabase(database, {
+      databasePath: fixture.databasePath,
+      manifestPath: fixture.manifestPath,
+      statePath: fixture.statePath,
+    });
+
+    const track = database.prepare("SELECT * FROM tracks WHERE id = ?").get("trk-rbx-fixture") as {
+      bpm: number | null;
+      bpm_confidence: string;
+      key_confidence: string;
+      key_unknown: number;
+      raw_key: string;
+      tonic: string;
+    };
+    const chords = database
+      .prepare("SELECT symbol FROM track_chords WHERE track_id = ?")
+      .all("trk-rbx-fixture");
+
+    assert.equal(result.reportCount, 1);
+    assert.equal(result.importedCount, 1);
+    assert.equal(result.errors.length, 0);
+    assert.equal(result.skipped.length, 0);
+    assert.equal(track.bpm, 130);
+    assert.equal(track.bpm_confidence, "estimated");
+    assert.equal(track.tonic, "G#");
+    assert.equal(track.key_unknown, 0);
+    assert.equal(track.key_confidence, "estimated");
+    assert.equal(track.raw_key, "Ab");
     assert.deepEqual(chords, []);
   } finally {
     database.close();

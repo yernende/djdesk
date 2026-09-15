@@ -4,8 +4,13 @@ coverage/
 .DS_Store
 *.log
 *.tsbuildinfo
+__pycache__/
 .env
 .env.*
 !.env.example
 data/*.sqlite
 data/*.sqlite-*
+data/*.sqlite.*
+data/*.bak
+data/*access-link*
+artifacts/

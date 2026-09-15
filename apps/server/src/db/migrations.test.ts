@@ -69,12 +69,18 @@ test("production editing migration removes only debug fixtures and makes BPM nul
     assert.equal(countRows(database, "set_draft_tracks", "track_id LIKE 'demo-fake-%'"), 0);
 
     const realTrack = database.prepare("SELECT * FROM tracks WHERE id = 'trk-real'").get() as {
+      audio_bitrate_mode: string;
+      audio_lossy_high_bitrate: number;
       audio_path: string;
+      audio_quality_status: string;
       bpm_confidence: string;
       key_confidence: string;
     };
 
     assert.equal(realTrack.audio_path, "/music/real.flac");
+    assert.equal(realTrack.audio_bitrate_mode, "unknown");
+    assert.equal(realTrack.audio_quality_status, "unknown");
+    assert.equal(realTrack.audio_lossy_high_bitrate, 0);
     assert.equal(realTrack.bpm_confidence, "confirmed");
     assert.equal(realTrack.key_confidence, "confirmed");
 

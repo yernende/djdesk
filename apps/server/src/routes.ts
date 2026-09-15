@@ -2,7 +2,7 @@ import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, rm, stat } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { basename, extname, join, parse } from "node:path";
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import {
   bucketTracksByTonic,
@@ -24,9 +24,11 @@ import {
   type SetDraft,
   type TrackAnalysisUpdateInput,
   type TrackRepository,
+  type TrackAudioSource,
 } from "./repositories/tracks.ts";
 import type { RetrievalJobView } from "./retrieval/types.ts";
 import type { RetrievalManager } from "./retrieval/jobs.ts";
+import { analyzeAudioQuality } from "./audio/quality.ts";
 
 export interface HealthResponse {
   ok: true;
@@ -358,7 +360,13 @@ export async function registerRoutes(
         };
       }
 
-      return toTrackView(updatedTrack);
+      const trackWithQuality = await analyzeAndSaveTrackAudioQuality(
+        tracks,
+        request.params.trackId,
+        audioPath,
+      );
+
+      return toTrackView(trackWithQuality ?? updatedTrack);
     },
   );
 
@@ -505,42 +513,7 @@ export async function registerRoutes(
       };
     }
 
-    const fileStats = await stat(audioSource.audioPath).catch(() => null);
-
-    if (!fileStats?.isFile()) {
-      reply.code(404);
-
-      return {
-        message: "Track audio file was not found",
-      };
-    }
-
-    const contentType = getAudioContentType(audioSource.audioPath);
-    const range = parseRangeHeader(request.headers.range, fileStats.size);
-
-    reply.header("Accept-Ranges", "bytes");
-    reply.header("Content-Type", contentType);
-    reply.header(
-      "Content-Disposition",
-      getAudioContentDisposition(basename(audioSource.audioPath)),
-    );
-
-    if (!range) {
-      reply.header("Content-Length", fileStats.size);
-
-      return reply.send(createReadStream(audioSource.audioPath));
-    }
-
-    reply.code(206);
-    reply.header("Content-Length", range.end - range.start + 1);
-    reply.header("Content-Range", `bytes ${range.start}-${range.end}/${fileStats.size}`);
-
-    return reply.send(
-      createReadStream(audioSource.audioPath, {
-        end: range.end,
-        start: range.start,
-      }),
-    );
+    return streamTrackAudio(audioSource, request, reply);
   });
 
   app.get<{ Reply: CircleResponse }>("/api/circle", async () => {
@@ -555,6 +528,57 @@ export async function registerRoutes(
       })),
     };
   });
+}
+
+export async function streamTrackAudio(
+  audioSource: TrackAudioSource,
+  request: FastifyRequest,
+  reply: FastifyReply,
+  options: { download?: boolean; publicName?: string } = {},
+): Promise<unknown> {
+  const fileStats = await stat(audioSource.audioPath).catch(() => null);
+
+  if (!fileStats?.isFile()) {
+    reply.code(404);
+
+    return {
+      message: "Track audio file was not found",
+    };
+  }
+
+  const contentType = getAudioContentType(audioSource.audioPath);
+  const range = parseRangeHeader(request.headers.range, fileStats.size);
+
+  if (request.headers.range && !range) {
+    return reply.code(416).header("Content-Range", `bytes */${fileStats.size}`).send();
+  }
+
+  reply.header("Accept-Ranges", "bytes");
+  reply.header("Content-Type", contentType);
+  reply.header(
+    "Content-Disposition",
+    getAudioContentDisposition(options.publicName ?? basename(audioSource.audioPath)).replace(
+      /^inline;/,
+      options.download ? "attachment;" : "inline;",
+    ),
+  );
+
+  if (!range) {
+    reply.header("Content-Length", fileStats.size);
+
+    return reply.send(createReadStream(audioSource.audioPath));
+  }
+
+  reply.code(206);
+  reply.header("Content-Length", range.end - range.start + 1);
+  reply.header("Content-Range", `bytes ${range.start}-${range.end}/${fileStats.size}`);
+
+  return reply.send(
+    createReadStream(audioSource.audioPath, {
+      end: range.end,
+      start: range.start,
+    }),
+  );
 }
 
 export function getAudioContentDisposition(fileName: string): string {
@@ -586,6 +610,16 @@ async function saveUploadedAudioFile(
   }
 
   return audioPath;
+}
+
+async function analyzeAndSaveTrackAudioQuality(
+  tracks: TrackRepository,
+  trackId: string,
+  audioPath: string,
+): Promise<Track | null> {
+  const quality = await analyzeAudioQuality(audioPath);
+
+  return await tracks.updateTrackAudioQuality(trackId, quality);
 }
 
 function sanitizeUploadedAudioFileName(fileName: string): string {

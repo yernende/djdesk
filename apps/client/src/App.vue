@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import Sortable, { type SortableEvent } from "sortablejs";
 
 import {
-  areKeysTransitionCompatible,
   canKeysTransition,
   CIRCLE_OF_FIFTHS,
   getTransitionProfile,
   describeKey,
+  formatKeyNotation,
+  formatCircleNotation,
+  describePlacement,
+  KEY_NOTATIONS,
+  type KeyNotation,
   getModalPlacement,
   PITCH_CLASSES,
   PITCH_CLASS_LABELS,
@@ -19,6 +24,13 @@ import {
 } from "@djdesk/domain";
 
 import {
+  ApiError,
+  fetchAppConfig,
+  fetchWorkspaceSession,
+  exchangeWorkspaceLink,
+  rotateWorkspaceLink,
+  takeNewWorkspaceSecret,
+  saveSetSnapshot,
   cancelRetrievalJob,
   createSet,
   createTrack,
@@ -28,8 +40,6 @@ import {
   fetchSets,
   fetchTrackHarmony,
   fetchTracks,
-  renameSet,
-  replaceSetTracks,
   retryRetrievalJob,
   selectSpotifyRetrievalCandidate,
   selectYandexRetrievalCandidate,
@@ -44,11 +54,29 @@ import {
   type TrackHarmonyResponse,
   type TrackView,
 } from "./api.ts";
+import { SetSaveQueue } from "./set-saving.ts";
+import { resolveSetRows } from "./set-rows.ts";
+import { DEFAULT_TARGET_BPM, compareBpmDescending, findClosestBpmTrack } from "./bpm-sorting.ts";
+import {
+  formatDraftCompatibilityReason,
+  getDraftCandidateCompatibility,
+  getDraftTransitionContext,
+  type DraftCandidateCompatibility,
+} from "./draft-slot.ts";
+import { getNextPlaybackIntentForAudioEvent } from "./playback-intent.ts";
+import { getTempoPreviewRate, isTempoPreviewRateActive } from "./tempo-preview.ts";
+import { locale, t, message, trackCount, segmentCount } from "./locale.ts";
+import HelpDialog from "./HelpDialog.vue";
 
 type SectionSlice = "home" | "pure-clockwise" | "pure-counter";
 type CompatibilityClass = "compatible" | "incompatible" | null;
 type MobilePanel = "focus" | "map" | "set" | "tracks";
 type PlacementLane = NonNullable<TrackView["placement"]>["lane"];
+type PitchPreservingAudioElement = HTMLAudioElement & {
+  mozPreservesPitch?: boolean;
+  preservesPitch?: boolean;
+  webkitPreservesPitch?: boolean;
+};
 type CircleSelection =
   | { kind: "unknown" }
   | { kind: "section"; section: number }
@@ -73,6 +101,7 @@ interface DraftSortItem {
 type AudioFilter = "all" | "linked" | "missing";
 type HarmonyNotesFilter = "all" | "with-notes" | "without-notes";
 type KeyStatusFilter = "all" | "known" | "unknown";
+type QualityFilter = "all" | "hq" | "lossy" | "lossy-plus" | "not-analyzed";
 type SetPresenceFilter = "all" | "in-set" | "not-in-set";
 type VerificationFilter = "all" | "confirmed" | "unverified";
 
@@ -84,6 +113,7 @@ interface TrackFilters {
   harmonyNotes: HarmonyNotesFilter;
   keyStatus: KeyStatusFilter;
   keyVerification: VerificationFilter;
+  quality: QualityFilter;
   setPresence: SetPresenceFilter;
 }
 
@@ -96,7 +126,32 @@ const PURE_ZONE_START = 0.25;
 const PURE_ZONE_END = 0.42;
 const BOUNDARY_ZONE_HALF_WIDTH = 0.07;
 const BPM_SCORE_HALF_LIFE = 0.06;
+const TARGET_BPM_SCROLL_DURATION_MS = 180;
 const ENABLE_DEMO_DATA = import.meta.env.VITE_ENABLE_DEMO_DATA === "true";
+const canEditCatalog = ref(false);
+const isPublicMode = ref(false);
+const isWorkspaceReady = ref(false);
+const hasWorkspace = ref(false);
+const accessLink = ref("");
+const accessMessage = ref<unknown>("");
+const isAccessBusy = ref(false);
+const workspaceError = ref<unknown>("");
+const keyNotation = ref<KeyNotation>("letters");
+const saveQueue = new SetSaveQueue();
+const pendingSetWrites = ref(0);
+const saveFailures = ref<Record<string, { message: unknown; conflict: boolean }>>({});
+const activeSaveFailure = computed(() => saveFailures.value[activeDraftSetId.value]);
+const hasUnsavedSetName = computed(
+  () => Boolean(activeDraftSet.value) && renameSetName.value.trim() !== activeDraftSet.value?.name,
+);
+const saveStatus = computed(() =>
+  activeSaveFailure.value
+    ? t("Could not save")
+    : isSetSaving.value || hasUnsavedSetName.value
+      ? t("Saving…")
+      : t("Saved"),
+);
+let setNameSaveTimer: ReturnType<typeof setTimeout> | undefined;
 const MODE_OPTIONS = [
   "major",
   "natural-minor",
@@ -119,20 +174,30 @@ const KEY_UNKNOWN_VALUE = "__unknown__";
 type KeyTonicDraft = PitchClass | typeof KEY_UNKNOWN_VALUE;
 
 const tracks = ref<TrackView[]>([]);
-const errorMessage = ref("");
+const errorMessage = ref<unknown>("");
 const isLoading = ref(true);
-const harmonyErrorMessage = ref("");
+const harmonyErrorMessage = ref<unknown>("");
 const isHarmonyLoading = ref(false);
 const circleSelection = ref<CircleSelection | null>(null);
 const selectedTrack = ref<TrackView | null>(null);
 const draftSets = ref<DraftSet[]>([]);
 const activeDraftSetId = ref("");
+const selectedDraftIndex = ref<number | null>(null);
 const trackHarmony = ref<TrackHarmonyResponse | null>(null);
 const draggedDraftIndex = ref<number | null>(null);
 const dragOverDraftIndex = ref<number | null>(null);
+const setChainList = ref<HTMLElement | null>(null);
 const audioPlayer = ref<HTMLAudioElement | null>(null);
+const audioCurrentTime = ref(0);
+const audioDuration = ref(0);
+const isAudioPlaying = ref(false);
+const playbackIntent = ref(false);
+const isTempoPreviewEnabled = ref(false);
+const tempoPreviewTargetBpmDraft = ref<string | number>(String(DEFAULT_TARGET_BPM));
+const targetBpmDraft = ref<string | number>(String(DEFAULT_TARGET_BPM));
+const browserGrid = ref<HTMLElement | null>(null);
 const activeMobilePanel = ref<MobilePanel>("map");
-const setErrorMessage = ref("");
+const setErrorMessage = ref<unknown>("");
 const isSetSaving = ref(false);
 const newSetName = ref("");
 const renameSetName = ref("");
@@ -160,7 +225,10 @@ const openedLucidaUrl = ref("");
 const trackSearchQuery = ref("");
 const areTrackFiltersOpen = ref(false);
 const trackFilters = ref<TrackFilters>(getDefaultTrackFilters());
+const hasPendingTargetBpmJump = ref(false);
 let retrievalPollTimer: number | null = null;
+let targetBpmScrollAnimationFrame: number | null = null;
+let setChainSortable: Sortable | null = null;
 let trackPatchQueue = Promise.resolve();
 const newTrackForm = ref({
   artist: "",
@@ -180,7 +248,7 @@ const newTrackForm = ref({
 const sections = computed(() =>
   CIRCLE_OF_FIFTHS.map((pitch, index) => ({
     index,
-    label: PITCH_CLASS_LABELS[pitch],
+    label: formatCircleNotation(pitch, keyNotation.value, locale.value),
     pitch,
   })),
 );
@@ -215,20 +283,14 @@ const browserTracks = computed(() => {
     .filter((track) => trackMatchesFilters(track, trackFilters.value))
     .filter((track) => !query || getTrackSearchScore(track, query) > 0);
 
-  if (!query) {
-    return sortBrowserTracks(filteredTracks);
-  }
-
-  return [...filteredTracks].sort((first, second) =>
-    compareSearchResultTracks(first, second, query),
-  );
+  return sortBrowserTracks(filteredTracks);
 });
 
 const selectedLabel = computed(() => getSelectedPositionLabel());
 
 const centerReadout = computed(() => getCenterReadout());
 
-const browserTitle = computed(() => `${browserTracks.value.length} tracks`);
+const browserTitle = computed(() => trackCount(browserTracks.value.length));
 
 const browserEyebrow = computed(() => selectedLabel.value);
 
@@ -260,12 +322,43 @@ const activeDraftSet = computed(
 const activeDraftTrackIds = computed(() => activeDraftSet.value?.trackIds ?? []);
 
 const draftTracks = computed(() =>
-  activeDraftTrackIds.value
-    .map((id) => tracks.value.find((track) => track.id === id))
-    .filter((track): track is TrackView => Boolean(track)),
+  resolveSetRows(activeDraftTrackIds.value, tracks.value, unavailableTrack),
 );
 
-const lastDraftTrack = computed(() => draftTracks.value.at(-1) ?? null);
+const draftTransitionContext = computed(() =>
+  getDraftTransitionContext(draftTracks.value, selectedDraftIndex.value),
+);
+
+const isReplaceMode = computed(() => draftTransitionContext.value.mode === "replace");
+
+const selectedDraftSlotTrack = computed(() =>
+  selectedDraftIndex.value === null ? null : (draftTracks.value[selectedDraftIndex.value] ?? null),
+);
+
+const replaceModeTitle = computed(() =>
+  selectedDraftIndex.value === null
+    ? ""
+    : t("Replacing #{position}", { position: selectedDraftIndex.value + 1 }),
+);
+
+const replaceModeSubtitle = computed(() => {
+  const context = draftTransitionContext.value;
+
+  if (context.mode !== "replace" || context.selectedIndex === null) {
+    return "";
+  }
+
+  const parts = [
+    context.previousTrack
+      ? t("after #{position}", { position: context.selectedIndex })
+      : t("start of set"),
+    context.nextTrack
+      ? t("before #{position}", { position: context.selectedIndex + 2 })
+      : t("end of set"),
+  ];
+
+  return parts.join(" · ");
+});
 
 const selectedTrackInAnyDraftSet = computed(() => {
   const trackId = selectedTrack.value?.id;
@@ -273,43 +366,62 @@ const selectedTrackInAnyDraftSet = computed(() => {
   return trackId ? isTrackInAnyDraftSet(trackId) : false;
 });
 
-const isAddTransitionRisky = computed(() => {
-  if (!selectedTrack.value) {
-    return false;
-  }
+const selectedTrackDraftCompatibility = computed<DraftCandidateCompatibility | null>(() =>
+  selectedTrack.value ? getTrackDraftCompatibility(selectedTrack.value) : null,
+);
 
-  return isTrackTransitionRisky(selectedTrack.value);
+const isAddTransitionRisky = computed(() => {
+  return selectedTrackDraftCompatibility.value?.isRisky ?? false;
 });
 
-const addButtonLabel = computed(() => (selectedTrackInAnyDraftSet.value ? "Add again" : "Add"));
+const addButtonLabel = computed(() => {
+  if (isReplaceMode.value) {
+    return t("Replace");
+  }
+
+  return selectedTrackInAnyDraftSet.value ? t("Add again") : t("Add");
+});
 
 const addButtonTitle = computed(() => {
   if (!activeDraftSet.value) {
-    return "Create a set before adding tracks";
+    return isPublicMode.value
+      ? t("Start and save your first set")
+      : t("Create a set before adding tracks");
+  }
+
+  if (isReplaceMode.value) {
+    const reason = formatDraftCompatibilityReason(
+      draftTransitionContext.value,
+      selectedTrackDraftCompatibility.value,
+    );
+
+    return reason
+      ? t("Replace anyway: {reason}", { reason: message(reason) })
+      : t("Replace selected set slot");
   }
 
   if (isAddTransitionRisky.value) {
-    return "Non-harmonic transition";
+    return t("Non-harmonic transition");
   }
 
   if (selectedTrackInAnyDraftSet.value) {
-    return "Track already appears in at least one draft set";
+    return t("Track already appears in at least one draft set");
   }
 
-  return "Add to active draft set";
+  return t("Add to active draft set");
 });
 
 const addButtonReason = computed(() => {
-  if (isAddTransitionRisky.value && selectedTrackInAnyDraftSet.value) {
-    return "Already in a set; non-harmonic";
-  }
+  const reasons = [
+    selectedTrackInAnyDraftSet.value ? "Already in a set" : "",
+    formatDraftCompatibilityReason(
+      draftTransitionContext.value,
+      selectedTrackDraftCompatibility.value,
+    ),
+  ].filter(Boolean);
 
-  if (isAddTransitionRisky.value) {
-    return "Non-harmonic";
-  }
-
-  if (selectedTrackInAnyDraftSet.value) {
-    return "Already in a set";
+  if (reasons.length > 0) {
+    return reasons.map((reason) => message(reason)).join("; ");
   }
 
   return "";
@@ -344,53 +456,376 @@ const mobileTabs = computed(() => [
   {
     count: visibleTracks.value.length,
     id: "map" as const,
-    label: "Map",
+    label: t("Map"),
   },
   {
     count: browserTracks.value.length,
     id: "tracks" as const,
-    label: isTrackSearchActive.value ? "Search" : "Tracks",
+    label: isTrackSearchActive.value ? t("Search") : t("Tracks"),
   },
   {
-    count: selectedTrack.value?.audioAvailable ? "audio" : "info",
+    count: selectedTrack.value?.audioAvailable ? t("audio") : t("info"),
     id: "focus" as const,
-    label: "Focus",
+    label: t("Focus"),
   },
   {
     count: draftTracks.value.length,
     id: "set" as const,
-    label: "Set",
+    label: t("Set"),
   },
 ]);
 
+const canControlSelectedAudio = computed(() => Boolean(selectedTrack.value?.audioUrl));
+
+const globalPlayerTitle = computed(() => selectedTrack.value?.title ?? t("No track selected"));
+
+const globalPlayerArtist = computed(() => selectedTrack.value?.artist || t("Select a track"));
+
+const globalPlayerMeta = computed(() => {
+  const track = selectedTrack.value;
+
+  if (!track) {
+    return t("No track selected");
+  }
+
+  if (!track.audioAvailable) {
+    return t("No audio linked");
+  }
+
+  return joinAudioQualityParts([
+    track.audioFileName ?? t("Audio linked"),
+    formatTrackAudioQualitySummary(track),
+  ]);
+});
+
+const globalPlayerStatus = computed(() => {
+  const track = selectedTrack.value;
+
+  if (!track) {
+    return t("No track selected");
+  }
+
+  if (!track.audioUrl) {
+    return playbackIntent.value ? t("Waiting for audio") : t("No audio linked");
+  }
+
+  if (isAudioPlaying.value) {
+    return t("Playing");
+  }
+
+  return playbackIntent.value ? t("Waiting for audio") : t("Paused");
+});
+
+const globalPlayerTimeLabel = computed(
+  () =>
+    `${formatPlaybackTime(audioCurrentTime.value)} / ${formatPlaybackTime(audioDuration.value)}`,
+);
+
+const browserTargetBpm = computed(
+  () => parseOptionalPositiveNumber(targetBpmDraft.value) ?? DEFAULT_TARGET_BPM,
+);
+
+const tempoPreviewTargetBpm = computed(
+  () => parseOptionalPositiveNumber(tempoPreviewTargetBpmDraft.value) ?? DEFAULT_TARGET_BPM,
+);
+
+const tempoPreviewRate = computed(() =>
+  getTempoPreviewRate({
+    enabled: isTempoPreviewEnabled.value,
+    sourceBpm: selectedTrack.value?.bpm ?? null,
+    targetBpm: tempoPreviewTargetBpm.value,
+  }),
+);
+
+const isTempoPreviewActive = computed(() => isTempoPreviewRateActive(tempoPreviewRate.value));
+
+const tempoPreviewStatus = computed(() => {
+  const track = selectedTrack.value;
+
+  if (!track) {
+    return t("Select a track");
+  }
+
+  if (!track.audioUrl) {
+    return t("No audio linked");
+  }
+
+  if (!isTempoPreviewEnabled.value) {
+    return t("Original tempo");
+  }
+
+  if (!track.bpm) {
+    return t("Unknown BPM");
+  }
+
+  if (!isTempoPreviewActive.value) {
+    return t("{bpm} BPM is already near playback target", { bpm: formatEditableBpm(track.bpm) });
+  }
+
+  return `${formatEditableBpm(track.bpm)} -> ${formatEditableBpm(tempoPreviewTargetBpm.value)} BPM · ${tempoPreviewRate.value.toFixed(2)}x`;
+});
+
 onMounted(async () => {
   try {
-    const [trackResponse, setResponse, audioLibraryResponse] = await Promise.all([
+    const config = await fetchAppConfig();
+    isPublicMode.value = config.mode === "public";
+    canEditCatalog.value = !isPublicMode.value;
+    try {
+      const savedNotation = localStorage.getItem("djdesk.key-notation");
+      keyNotation.value = KEY_NOTATIONS.includes(savedNotation as KeyNotation)
+        ? (savedNotation as KeyNotation)
+        : isPublicMode.value
+          ? "letters"
+          : "solfege";
+    } catch {
+      /* Storage preferences are optional. */
+    }
+    await initializeWorkspace();
+    const [trackResponse, audioLibraryResponse] = await Promise.all([
       fetchTracks(),
-      fetchSets(),
-      fetchAudioLibrary(),
+      canEditCatalog.value ? fetchAudioLibrary() : Promise.resolve({ audioUploadDir: "" }),
     ]);
-    const loadedTracks = ENABLE_DEMO_DATA
-      ? [...trackResponse.tracks, ...buildDemoTrackViews()]
-      : trackResponse.tracks;
+    const loadedTracks =
+      ENABLE_DEMO_DATA && canEditCatalog.value
+        ? [...trackResponse.tracks, ...buildDemoTrackViews()]
+        : trackResponse.tracks;
 
     audioUploadDir.value = audioLibraryResponse.audioUploadDir;
     tracks.value = loadedTracks;
     selectedTrack.value = loadedTracks[0] ?? null;
-    draftSets.value = ENABLE_DEMO_DATA
-      ? [...setResponse.sets, ...buildMockDraftSets(loadedTracks)]
-      : [...setResponse.sets];
+    if (ENABLE_DEMO_DATA && canEditCatalog.value)
+      draftSets.value.push(...buildMockDraftSets(loadedTracks));
     activeDraftSetId.value = draftSets.value[0]?.id ?? "";
     renameSetName.value = activeDraftSet.value?.name ?? "";
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "Unknown API error";
+    errorMessage.value = error;
   } finally {
     isLoading.value = false;
   }
+  window.addEventListener("beforeunload", warnUnsavedChanges);
+  window.addEventListener("hashchange", handleWorkspaceLinkChange);
 });
 
 onUnmounted(() => {
+  clearTimeout(setNameSaveTimer);
+  window.removeEventListener("beforeunload", warnUnsavedChanges);
+  window.removeEventListener("hashchange", handleWorkspaceLinkChange);
   clearRetrievalPolling();
+  cancelTargetBpmScroll();
+  destroySetChainSortable();
+});
+
+watch(keyNotation, (value) => {
+  try {
+    localStorage.setItem("djdesk.key-notation", value);
+  } catch {
+    /* Keep the in-memory preference. */
+  }
+});
+
+function displayKey(track: TrackView): string {
+  return formatKeyNotation(track.key, keyNotation.value, locale.value);
+}
+
+function displayPlacement(track: TrackView): string {
+  return track.key ? describePlacement(track.key, locale.value) : t("Not placed on circle yet");
+}
+
+function unavailableTrack(id: string): TrackView {
+  return {
+    id,
+    title: t("Track unavailable"),
+    bpm: null,
+    key: null,
+    chordProgression: [],
+    tags: [],
+    confidence: { bpm: "estimated", key: "estimated", chords: "estimated" },
+    audioAvailable: false,
+    audioFileName: null,
+    audioUrl: null,
+    keyLabel: t("Unknown key"),
+    placement: null,
+  };
+}
+
+function warnUnsavedChanges(event: BeforeUnloadEvent): void {
+  if (
+    !pendingSetWrites.value &&
+    !hasUnsavedSetName.value &&
+    !Object.keys(saveFailures.value).length
+  )
+    return;
+  event.preventDefault();
+}
+
+function handleWorkspaceLinkChange(): void {
+  if (isPublicMode.value && window.location.hash) void initializeWorkspace(true);
+}
+
+async function initializeWorkspace(preserveDrafts = false): Promise<void> {
+  try {
+    if (isPublicMode.value) {
+      const path = /^\/w\/([^/]+)\/?$/.exec(window.location.pathname);
+      const secret = new URLSearchParams(window.location.hash.slice(1)).get("key");
+      // Remove the bearer secret even when exchange fails; never retain it in history.
+      if (window.location.hash) window.history.replaceState(null, "", window.location.pathname);
+      const session =
+        path?.[1] && secret
+          ? await exchangeWorkspaceLink(path[1], secret)
+          : await fetchWorkspaceSession();
+      if (path?.[1] && session.workspaceId !== path[1])
+        throw new Error("Open the complete secret access link for this workspace.");
+      hasWorkspace.value = Boolean(session.workspaceId);
+      if (!hasWorkspace.value) {
+        isWorkspaceReady.value = true;
+        return;
+      }
+      window.history.replaceState(null, "", `/w/${session.workspaceId}`);
+      workspaceError.value = "";
+      // A same-page access link changes only the fragment. Exchange it without
+      // discarding edits or conflict recovery state already open in this tab.
+      if (preserveDrafts && isWorkspaceReady.value) return;
+    }
+    const result = await fetchSets();
+    draftSets.value = result.sets;
+    for (const set of result.sets) saveQueue.remember(set.id, set.revision);
+    isWorkspaceReady.value = true;
+  } catch (error) {
+    workspaceError.value = error;
+  }
+}
+
+function showNewAccessLink(): void {
+  const result = takeNewWorkspaceSecret();
+  if (!result) return;
+  hasWorkspace.value = true;
+  activeMobilePanel.value = "set";
+  accessLink.value = `${window.location.origin}/w/${result.workspaceId}#key=${result.secret}`;
+  window.history.replaceState(null, "", `/w/${result.workspaceId}`);
+  accessMessage.value =
+    "Save this link now. Anyone with it can edit all your sets. Without the link or an active browser session, access cannot be recovered.";
+}
+
+async function copyAccessLink(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(accessLink.value);
+    accessMessage.value = "Link copied. Keep it somewhere private.";
+  } catch {
+    accessMessage.value = "Select and copy the link below.";
+  }
+}
+
+async function replaceAccessLink(): Promise<void> {
+  if (
+    !window.confirm(
+      t(
+        "Replace your secret link? The old link and other devices will lose access. Your sets will remain saved.",
+      ),
+    )
+  )
+    return;
+  isAccessBusy.value = true;
+  try {
+    await rotateWorkspaceLink();
+    showNewAccessLink();
+  } catch (error) {
+    accessMessage.value = error;
+  } finally {
+    isAccessBusy.value = false;
+  }
+}
+
+async function persistDraftSnapshot(set: DraftSet): Promise<void> {
+  if (set.isDemo) return;
+  const snapshot = { ...set, trackIds: [...set.trackIds] };
+  pendingSetWrites.value++;
+  isSetSaving.value = true;
+  try {
+    await saveQueue.save(
+      set.id,
+      (revision) => saveSetSnapshot(snapshot, revision),
+      replaceDraftSet,
+    );
+  } catch (error) {
+    saveFailures.value = {
+      ...saveFailures.value,
+      [set.id]: {
+        message: error,
+        conflict: error instanceof ApiError && error.status === 409,
+      },
+    };
+  } finally {
+    pendingSetWrites.value--;
+    isSetSaving.value = pendingSetWrites.value > 0;
+  }
+}
+
+async function retryActiveSetSave(): Promise<void> {
+  const set = activeDraftSet.value;
+  if (!set) return;
+  delete saveFailures.value[set.id];
+  saveQueue.unblock(set.id);
+  await persistDraftSnapshot(set);
+}
+
+async function reloadActiveSet(): Promise<void> {
+  const set = activeDraftSet.value;
+  if (
+    !set ||
+    !window.confirm(t("Load the saved version? Unsaved changes to this set will be discarded."))
+  )
+    return;
+  try {
+    const saved = (await fetchSets()).sets.find((candidate) => candidate.id === set.id);
+    if (!saved) {
+      setErrorMessage.value =
+        "This set was deleted on another device. Save your version as a copy.";
+      return;
+    }
+    saveQueue.remember(set.id, saved.revision);
+    saveQueue.unblock(set.id);
+    delete saveFailures.value[set.id];
+    replaceDraftSet(saved);
+    renameSetName.value = saved.name;
+  } catch (error) {
+    setErrorMessage.value = error;
+  }
+}
+
+async function copyUnsavedSet(): Promise<void> {
+  const set = activeDraftSet.value;
+  if (!set || isSetSaving.value) return;
+  isSetSaving.value = true;
+  try {
+    const copy = await createSet(
+      t("{name} (copy)", { name: set.name.slice(0, 110) }),
+      set.trackIds,
+    );
+    draftSets.value.push(copy);
+    saveQueue.remember(copy.id, copy.revision);
+    activeDraftSetId.value = copy.id;
+    const saved = (await fetchSets()).sets.find((candidate) => candidate.id === set.id);
+    if (saved) {
+      replaceDraftSet(saved);
+      saveQueue.remember(saved.id, saved.revision);
+    } else draftSets.value = draftSets.value.filter((candidate) => candidate.id !== set.id);
+    delete saveFailures.value[set.id];
+    saveQueue.unblock(set.id);
+  } catch (error) {
+    setErrorMessage.value = error;
+  } finally {
+    isSetSaving.value = false;
+  }
+}
+
+watch(setChainList, (element) => {
+  setupSetChainSortable(element);
+});
+
+watch(activeDraftTrackIds, (trackIds) => {
+  if (selectedDraftIndex.value !== null && selectedDraftIndex.value >= trackIds.length) {
+    selectedDraftIndex.value = null;
+  }
 });
 
 watch(
@@ -408,8 +843,7 @@ watch(
     try {
       trackHarmony.value = await fetchTrackHarmony(track.id);
     } catch (error) {
-      harmonyErrorMessage.value =
-        error instanceof Error ? error.message : "Unknown harmony API error";
+      harmonyErrorMessage.value = error;
     } finally {
       isHarmonyLoading.value = false;
     }
@@ -422,15 +856,19 @@ watch(
 watch(
   selectedTrack,
   async (track, previousTrack) => {
-    const shouldContinuePlayback =
-      Boolean(previousTrack && track && previousTrack.id !== track.id) &&
-      isAudioElementPlaying(audioPlayer.value);
+    const trackChanged = Boolean(previousTrack && track && previousTrack.id !== track.id);
+    const wasPlaying = trackChanged && isAudioElementPlaying(audioPlayer.value);
 
-    if (!shouldContinuePlayback || !track?.audioUrl) {
+    if (wasPlaying) {
+      playbackIntent.value = true;
+    }
+
+    if (!playbackIntent.value || !track?.audioUrl) {
       return;
     }
 
     await nextTick();
+    applyAudioTempoPreview(audioPlayer.value);
     await audioPlayer.value?.play().catch(() => undefined);
   },
   {
@@ -439,8 +877,23 @@ watch(
 );
 
 watch(
+  [audioPlayer, tempoPreviewRate],
+  async () => {
+    await nextTick();
+    applyAudioTempoPreview(audioPlayer.value);
+  },
+  {
+    flush: "post",
+  },
+);
+
+watch(
   selectedTrack,
-  (track) => {
+  (track, previousTrack) => {
+    if (track?.id !== previousTrack?.id || track?.audioUrl !== previousTrack?.audioUrl) {
+      resetAudioPlaybackState();
+    }
+
     if (!isBpmInputFocused.value) {
       bpmDraft.value = track?.bpm ? String(track.bpm) : "";
     }
@@ -470,10 +923,18 @@ watch(isTrackSearchActive, (isActive) => {
   }
 });
 
+watch(activeMobilePanel, (panel) => {
+  if (panel === "tracks" && hasPendingTargetBpmJump.value) {
+    requestTargetBpmJump();
+  }
+});
+
 watch(
   activeDraftSet,
-  (setDraft) => {
-    renameSetName.value = setDraft?.name ?? "";
+  (setDraft, previous) => {
+    // An in-flight order save must not replace a name that is still being typed.
+    if (setDraft?.id !== previous?.id || renameSetName.value === (previous?.name ?? ""))
+      renameSetName.value = setDraft?.name ?? "";
   },
   {
     immediate: true,
@@ -481,35 +942,203 @@ watch(
 );
 
 function selectSection(index: number): void {
-  setCircleSelection({ kind: "section", section: index });
+  setCircleSelection({ kind: "section", section: index }, { jumpToTargetBpm: true });
 }
 
 function isAudioElementPlaying(audioElement: HTMLAudioElement | null): boolean {
   return Boolean(audioElement && !audioElement.paused && !audioElement.ended);
 }
 
+function resetAudioPlaybackState(): void {
+  audioCurrentTime.value = 0;
+  audioDuration.value = 0;
+  isAudioPlaying.value = false;
+}
+
+function applyAudioTempoPreview(audioElement: HTMLAudioElement | null): void {
+  if (!audioElement) {
+    return;
+  }
+
+  const pitchElement = audioElement as PitchPreservingAudioElement;
+
+  if ("preservesPitch" in pitchElement) {
+    pitchElement.preservesPitch = true;
+  }
+
+  if ("mozPreservesPitch" in pitchElement) {
+    pitchElement.mozPreservesPitch = true;
+  }
+
+  if ("webkitPreservesPitch" in pitchElement) {
+    pitchElement.webkitPreservesPitch = true;
+  }
+
+  const rate = tempoPreviewRate.value;
+  audioElement.defaultPlaybackRate = rate;
+  audioElement.playbackRate = rate;
+}
+
+function syncAudioPlaybackState(audioElement: HTMLAudioElement | null): void {
+  if (!audioElement) {
+    resetAudioPlaybackState();
+    return;
+  }
+
+  audioCurrentTime.value = Number.isFinite(audioElement.currentTime) ? audioElement.currentTime : 0;
+  audioDuration.value = Number.isFinite(audioElement.duration) ? audioElement.duration : 0;
+  isAudioPlaying.value = isAudioElementPlaying(audioElement);
+}
+
+function getAudioEventTrackId(event: Event): string | null {
+  const audioElement = event.currentTarget as HTMLAudioElement | null;
+  return audioElement?.dataset.trackId ?? null;
+}
+
+function handleAudioPlay(event: Event): void {
+  const audioElement = event.currentTarget as HTMLAudioElement | null;
+
+  applyAudioTempoPreview(audioElement);
+  syncAudioPlaybackState(audioElement);
+  playbackIntent.value = getNextPlaybackIntentForAudioEvent({
+    activeTrackId: selectedTrack.value?.id,
+    currentIntent: playbackIntent.value,
+    eventTrackId: getAudioEventTrackId(event),
+    eventType: "play",
+  });
+}
+
+function handleAudioPause(event: Event): void {
+  syncAudioPlaybackState(event.currentTarget as HTMLAudioElement | null);
+  playbackIntent.value = getNextPlaybackIntentForAudioEvent({
+    activeTrackId: selectedTrack.value?.id,
+    currentIntent: playbackIntent.value,
+    eventTrackId: getAudioEventTrackId(event),
+    eventType: "pause",
+  });
+}
+
+function handleAudioEnded(event: Event): void {
+  syncAudioPlaybackState(event.currentTarget as HTMLAudioElement | null);
+  playbackIntent.value = false;
+}
+
+function handleAudioMetadataChange(event: Event): void {
+  const audioElement = event.currentTarget as HTMLAudioElement | null;
+
+  applyAudioTempoPreview(audioElement);
+  syncAudioPlaybackState(audioElement);
+}
+
+function handleAudioTimeUpdate(event: Event): void {
+  syncAudioPlaybackState(event.currentTarget as HTMLAudioElement | null);
+}
+
+async function toggleGlobalPlayerPlayback(): Promise<void> {
+  if (!selectedTrack.value?.audioUrl) {
+    return;
+  }
+
+  await nextTick();
+
+  const audioElement = audioPlayer.value;
+
+  if (!audioElement) {
+    return;
+  }
+
+  applyAudioTempoPreview(audioElement);
+
+  if (isAudioElementPlaying(audioElement)) {
+    playbackIntent.value = false;
+    audioElement.pause();
+    syncAudioPlaybackState(audioElement);
+    return;
+  }
+
+  playbackIntent.value = true;
+  await audioElement.play().catch(() => undefined);
+  syncAudioPlaybackState(audioElement);
+}
+
+function toggleTempoPreview(): void {
+  if (!selectedTrack.value?.audioUrl) {
+    return;
+  }
+
+  isTempoPreviewEnabled.value = !isTempoPreviewEnabled.value;
+}
+
+function seekGlobalPlayer(event: Event): void {
+  const audioElement = audioPlayer.value;
+  const nextTime = Number((event.currentTarget as HTMLInputElement | null)?.value);
+
+  if (!audioElement || !Number.isFinite(nextTime)) {
+    return;
+  }
+
+  audioElement.currentTime = Math.max(0, Math.min(nextTime, audioDuration.value || nextTime));
+  syncAudioPlaybackState(audioElement);
+}
+
 function selectSectionSlice(index: number, slice: SectionSlice): void {
-  setCircleSelection({ kind: "slice", section: index, slice });
+  setCircleSelection({ kind: "slice", section: index, slice }, { jumpToTargetBpm: true });
 }
 
 function selectBoundary(boundaryIndex: number): void {
-  setCircleSelection({ kind: "boundary", boundaryIndex });
+  setCircleSelection({ kind: "boundary", boundaryIndex }, { jumpToTargetBpm: true });
 }
 
 function selectTrack(track: TrackView): void {
   selectedTrack.value = track;
-  syncCircleSelectionToTrack(track);
+  let didChangeCircleSelection = false;
+
+  if (!isReplaceMode.value) {
+    didChangeCircleSelection = syncCircleSelectionToTrack(track);
+  }
+
   setActiveMobilePanel("focus");
+
+  if (didChangeCircleSelection) {
+    requestTargetBpmJump();
+  }
+}
+
+function selectBrowserTrack(track: TrackView): void {
+  selectedTrack.value = track;
+  if (!isReplaceMode.value) {
+    syncCircleSelectionToTrack(track);
+  }
+  setActiveMobilePanel(isReplaceMode.value ? "tracks" : "focus");
+}
+
+function selectDraftReplacementTarget(index: number, track: TrackView): void {
+  selectedDraftIndex.value = index;
+  selectedTrack.value = track;
+  syncCircleSelectionToTrack(track);
+  setActiveMobilePanel("tracks");
+  requestTargetBpmJump();
+}
+
+function clearSelectedDraftSlot(): void {
+  selectedDraftIndex.value = null;
 }
 
 function selectUnknownKeyTracks(): void {
-  setCircleSelection({ kind: "unknown" });
+  setCircleSelection({ kind: "unknown" }, { jumpToTargetBpm: true });
 }
 
-function setCircleSelection(selection: CircleSelection | null): void {
+function setCircleSelection(
+  selection: CircleSelection | null,
+  options: { jumpToTargetBpm?: boolean } = {},
+): void {
   circleSelection.value = selection;
   selectPreferredBrowserTrack();
   setActiveMobilePanel("tracks");
+
+  if (options.jumpToTargetBpm) {
+    jumpToTargetBpm();
+  }
 }
 
 function clearCircleSelection(): void {
@@ -550,7 +1179,7 @@ function selectFirstSearchResult(): void {
   const track = browserTracks.value[0];
 
   if (track) {
-    selectTrack(track);
+    selectBrowserTrack(track);
   }
 }
 
@@ -568,6 +1197,101 @@ function getPreferredBrowserTrack(trackList: readonly TrackView[]): TrackView | 
   return trackList.find((track) => !isAddButtonRedForTrack(track)) ?? trackList[0] ?? null;
 }
 
+function jumpToTargetBpm(): void {
+  const closestTrack = findClosestBpmTrack(browserTargetBpm.value, browserTracks.value);
+
+  if (!closestTrack) {
+    return;
+  }
+
+  void nextTick(() => {
+    const trackRow = browserGrid.value?.querySelector<HTMLElement>(
+      `[data-track-id="${CSS.escape(closestTrack.id)}"]`,
+    );
+
+    if (trackRow) {
+      scrollBrowserTrackIntoView(trackRow);
+    }
+  });
+}
+
+function requestTargetBpmJump(): void {
+  void nextTick(() => {
+    if (!isBrowserGridVisible()) {
+      hasPendingTargetBpmJump.value = true;
+      return;
+    }
+
+    hasPendingTargetBpmJump.value = false;
+    jumpToTargetBpm();
+  });
+}
+
+function isBrowserGridVisible(): boolean {
+  const grid = browserGrid.value;
+
+  return Boolean(
+    grid && grid.offsetParent !== null && grid.clientWidth > 0 && grid.clientHeight > 0,
+  );
+}
+
+function scrollBrowserTrackIntoView(trackRow: HTMLElement): void {
+  const scroller = browserGrid.value;
+
+  if (!scroller) {
+    trackRow.scrollIntoView({ behavior: "auto", block: "center" });
+    return;
+  }
+
+  cancelTargetBpmScroll();
+
+  const scrollerRect = scroller.getBoundingClientRect();
+  const rowRect = trackRow.getBoundingClientRect();
+  const rowTop = rowRect.top - scrollerRect.top + scroller.scrollTop;
+  const targetTop = clampNumber(
+    rowTop - (scroller.clientHeight - rowRect.height) / 2,
+    0,
+    Math.max(0, scroller.scrollHeight - scroller.clientHeight),
+  );
+  const startTop = scroller.scrollTop;
+  const distance = targetTop - startTop;
+
+  if (Math.abs(distance) < 1) {
+    return;
+  }
+
+  const startTime = window.performance.now();
+
+  const animate = (timestamp: number): void => {
+    const progress = clampNumber((timestamp - startTime) / TARGET_BPM_SCROLL_DURATION_MS, 0, 1);
+    const easedProgress = 1 - (1 - progress) ** 3;
+
+    scroller.scrollTop = startTop + distance * easedProgress;
+
+    if (progress < 1) {
+      targetBpmScrollAnimationFrame = window.requestAnimationFrame(animate);
+      return;
+    }
+
+    targetBpmScrollAnimationFrame = null;
+  };
+
+  targetBpmScrollAnimationFrame = window.requestAnimationFrame(animate);
+}
+
+function cancelTargetBpmScroll(): void {
+  if (targetBpmScrollAnimationFrame === null) {
+    return;
+  }
+
+  window.cancelAnimationFrame(targetBpmScrollAnimationFrame);
+  targetBpmScrollAnimationFrame = null;
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
 function isAddButtonRedForTrack(track: TrackView): boolean {
   return isTrackInAnyDraftSet(track.id) || isTrackTransitionRisky(track);
 }
@@ -577,16 +1301,20 @@ function isTrackInAnyDraftSet(trackId: string): boolean {
 }
 
 function isTrackTransitionRisky(track: TrackView): boolean {
-  const previousTrack = draftTracks.value.at(-1);
+  return getTrackDraftCompatibility(track).isRisky;
+}
 
-  return Boolean(previousTrack && !canTracksFollow(previousTrack, track));
+function getTrackDraftCompatibility(track: TrackView): DraftCandidateCompatibility {
+  return getDraftCandidateCompatibility(draftTransitionContext.value, track, canTracksFollow);
 }
 
 function selectDraftSet(id: string): void {
   activeDraftSetId.value = id;
+  selectedDraftIndex.value = null;
 }
 
 async function createDraftSetFromInput(): Promise<void> {
+  if (!isWorkspaceReady.value || isSetSaving.value) return;
   const name = newSetName.value.trim();
 
   if (!name) {
@@ -599,18 +1327,27 @@ async function createDraftSetFromInput(): Promise<void> {
 
   try {
     const setDraft = await createSet(name);
+    saveQueue.remember(setDraft.id, setDraft.revision);
+    showNewAccessLink();
 
     draftSets.value = [...draftSets.value, setDraft];
     activeDraftSetId.value = setDraft.id;
+    selectedDraftIndex.value = null;
     newSetName.value = "";
   } catch (error) {
-    setErrorMessage.value = error instanceof Error ? error.message : "Could not create set";
+    setErrorMessage.value = error;
   } finally {
     isSetSaving.value = false;
   }
 }
 
+function scheduleSetNameSave(): void {
+  clearTimeout(setNameSaveTimer);
+  setNameSaveTimer = setTimeout(() => void saveActiveSetName(), 350);
+}
+
 async function saveActiveSetName(): Promise<void> {
+  clearTimeout(setNameSaveTimer);
   const activeSet = activeDraftSet.value;
   const name = renameSetName.value.trim();
 
@@ -625,28 +1362,19 @@ async function saveActiveSetName(): Promise<void> {
   }
 
   setErrorMessage.value = "";
-  isSetSaving.value = true;
-
-  try {
-    const updated = await renameSet(activeSet.id, name);
-
-    replaceDraftSet(updated);
-  } catch (error) {
-    setErrorMessage.value = error instanceof Error ? error.message : "Could not rename set";
-    renameSetName.value = activeSet.name;
-  } finally {
-    isSetSaving.value = false;
-  }
+  const updated = { ...activeSet, name };
+  replaceDraftSet(updated);
+  await persistDraftSnapshot(updated);
 }
 
 async function deleteActiveSet(): Promise<void> {
   const activeSet = activeDraftSet.value;
 
-  if (!activeSet) {
+  if (!activeSet || isSetSaving.value) {
     return;
   }
 
-  if (!window.confirm(`Delete set "${activeSet.name}"?`)) {
+  if (!window.confirm(t("Delete set “{name}”?", { name: activeSet.name }))) {
     return;
   }
 
@@ -655,20 +1383,56 @@ async function deleteActiveSet(): Promise<void> {
 
   try {
     if (!activeSet.isDemo) {
-      await deleteSet(activeSet.id);
+      await deleteSet(activeSet.id, saveQueue.revision(activeSet.id));
     }
 
     draftSets.value = draftSets.value.filter((setDraft) => setDraft.id !== activeSet.id);
+    delete saveFailures.value[activeSet.id];
+    saveQueue.unblock(activeSet.id);
     activeDraftSetId.value = draftSets.value[0]?.id ?? "";
+    selectedDraftIndex.value = null;
   } catch (error) {
-    setErrorMessage.value = error instanceof Error ? error.message : "Could not delete set";
+    setErrorMessage.value = error;
+    if (error instanceof ApiError && error.status === 409)
+      saveFailures.value[activeSet.id] = { message: error, conflict: true };
   } finally {
     isSetSaving.value = false;
   }
 }
 
 async function addSelectedTrack(): Promise<void> {
-  if (!selectedTrack.value || !activeDraftSet.value) {
+  if (
+    !selectedTrack.value ||
+    !isWorkspaceReady.value ||
+    !tracks.value.some((track) => track.id === selectedTrack.value?.id)
+  )
+    return;
+  if (!activeDraftSet.value) {
+    if (!isPublicMode.value || isSetSaving.value) return;
+    isSetSaving.value = true;
+    try {
+      const set = await createSet(t("My first set"), [selectedTrack.value.id]);
+      draftSets.value.push(set);
+      activeDraftSetId.value = set.id;
+      saveQueue.remember(set.id, set.revision);
+      showNewAccessLink();
+    } catch (error) {
+      setErrorMessage.value = error;
+    } finally {
+      isSetSaving.value = false;
+    }
+    return;
+  }
+
+  if (
+    selectedDraftIndex.value !== null &&
+    selectedDraftIndex.value >= 0 &&
+    selectedDraftIndex.value < activeDraftTrackIds.value.length
+  ) {
+    const trackIds = [...activeDraftTrackIds.value];
+
+    trackIds[selectedDraftIndex.value] = selectedTrack.value.id;
+    await updateActiveDraftTrackIds(trackIds);
     return;
   }
 
@@ -676,6 +1440,7 @@ async function addSelectedTrack(): Promise<void> {
 }
 
 async function removeFromDraftAt(index: number): Promise<void> {
+  selectedDraftIndex.value = getSelectedDraftIndexAfterRemoval(index);
   await updateActiveDraftTrackIds(
     activeDraftTrackIds.value.filter((_, trackIndex) => trackIndex !== index),
   );
@@ -704,7 +1469,50 @@ async function reorderDraftTrack(fromIndex: number, toIndex: number): Promise<vo
   }
 
   trackIds.splice(toIndex, 0, trackId);
+  selectedDraftIndex.value = getSelectedDraftIndexAfterReorder(
+    selectedDraftIndex.value,
+    fromIndex,
+    toIndex,
+  );
   await updateActiveDraftTrackIds(trackIds);
+}
+
+function getSelectedDraftIndexAfterRemoval(removedIndex: number): number | null {
+  if (selectedDraftIndex.value === null) {
+    return null;
+  }
+
+  if (selectedDraftIndex.value === removedIndex) {
+    return null;
+  }
+
+  return selectedDraftIndex.value > removedIndex
+    ? selectedDraftIndex.value - 1
+    : selectedDraftIndex.value;
+}
+
+function getSelectedDraftIndexAfterReorder(
+  selectedIndex: number | null,
+  fromIndex: number,
+  toIndex: number,
+): number | null {
+  if (selectedIndex === null) {
+    return null;
+  }
+
+  if (selectedIndex === fromIndex) {
+    return toIndex;
+  }
+
+  if (fromIndex < selectedIndex && selectedIndex <= toIndex) {
+    return selectedIndex - 1;
+  }
+
+  if (toIndex <= selectedIndex && selectedIndex < fromIndex) {
+    return selectedIndex + 1;
+  }
+
+  return selectedIndex;
 }
 
 async function sortActiveDraftHarmonically(): Promise<void> {
@@ -832,80 +1640,58 @@ function getCircleDistance(previous: TrackView, next: TrackView): number {
   return Math.min(distance, 12 - distance);
 }
 
-function startDraftDrag(event: DragEvent, index: number): void {
-  draggedDraftIndex.value = index;
-  dragOverDraftIndex.value = index;
+function setupSetChainSortable(element: HTMLElement | null): void {
+  destroySetChainSortable();
 
-  if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", String(index));
-  }
-}
-
-function enterDraftDropTarget(index: number): void {
-  if (draggedDraftIndex.value !== null) {
-    dragOverDraftIndex.value = index;
-  }
-}
-
-function dropDraftTrack(event: DragEvent, index: number): void {
-  event.preventDefault();
-
-  const serializedIndex = event.dataTransfer?.getData("text/plain") ?? "";
-  const parsedIndex = Number.parseInt(serializedIndex, 10);
-  const fromIndex = draggedDraftIndex.value ?? parsedIndex;
-
-  if (Number.isInteger(fromIndex)) {
-    void reorderDraftTrack(fromIndex, index);
+  if (!element) {
+    return;
   }
 
-  endDraftDrag();
+  setChainSortable = Sortable.create(element, {
+    animation: 140,
+    chosenClass: "dragging",
+    dragClass: "dragging",
+    ghostClass: "drag-over",
+    handle: ".drag-handle",
+    onChange(event: SortableEvent) {
+      dragOverDraftIndex.value = event.newIndex ?? null;
+    },
+    onEnd(event: SortableEvent) {
+      const fromIndex = event.oldIndex;
+      const toIndex = event.newIndex;
+
+      clearDraftDragState();
+
+      if (fromIndex === undefined || toIndex === undefined || fromIndex === toIndex) {
+        return;
+      }
+
+      void reorderDraftTrack(fromIndex, toIndex);
+    },
+    onStart(event: SortableEvent) {
+      draggedDraftIndex.value = event.oldIndex ?? null;
+      dragOverDraftIndex.value = event.oldIndex ?? null;
+    },
+  });
 }
 
-function endDraftDrag(): void {
+function destroySetChainSortable(): void {
+  setChainSortable?.destroy();
+  setChainSortable = null;
+}
+
+function clearDraftDragState(): void {
   draggedDraftIndex.value = null;
   dragOverDraftIndex.value = null;
 }
 
 async function updateActiveDraftTrackIds(trackIds: string[]): Promise<void> {
-  const activeSetId = activeDraftSet.value?.id;
-
-  if (!activeSetId) {
-    return;
-  }
-
-  const previousDraftSets = draftSets.value;
   const activeSet = activeDraftSet.value;
-  const optimisticSet = activeSet
-    ? {
-        ...activeSet,
-        trackIds,
-      }
-    : null;
-
-  if (!optimisticSet) {
-    return;
-  }
-
-  replaceDraftSet(optimisticSet);
+  if (!activeSet) return;
+  const updated = { ...activeSet, trackIds };
+  replaceDraftSet(updated);
   setErrorMessage.value = "";
-
-  if (activeSet.isDemo) {
-    return;
-  }
-
-  isSetSaving.value = true;
-
-  try {
-    const persistedSet = await replaceSetTracks(activeSetId, trackIds);
-
-    replaceDraftSet(persistedSet);
-  } catch (error) {
-    draftSets.value = previousDraftSets;
-    setErrorMessage.value = error instanceof Error ? error.message : "Could not save set";
-  } finally {
-    isSetSaving.value = false;
-  }
+  await persistDraftSnapshot(updated);
 }
 
 function replaceDraftSet(setDraft: DraftSet): void {
@@ -950,7 +1736,9 @@ async function patchTrackAnalysis(
 
     if (selectedTrack.value?.id === trackId) {
       selectedTrack.value = updatedTrack;
-      syncCircleSelectionToTrack(updatedTrack);
+      if (!isReplaceMode.value) {
+        syncCircleSelectionToTrack(updatedTrack);
+      }
     }
 
     return true;
@@ -1353,7 +2141,7 @@ function getRetrievalStageLabel(stage: RetrievalJobView["stage"]): string {
     case "failed":
       return "Failed";
     case "linked":
-      return "Audio linked";
+      return t("Audio linked");
     case "lucida":
       return "Lucida fallback";
     case "searching-spotify":
@@ -1415,8 +2203,43 @@ function updateTrackInState(track: TrackView): void {
   tracks.value = tracks.value.map((candidate) => (candidate.id === track.id ? track : candidate));
 }
 
-function syncCircleSelectionToTrack(track: TrackView): void {
-  circleSelection.value = getCircleSelectionForTrack(track);
+function syncCircleSelectionToTrack(track: TrackView): boolean {
+  const nextSelection = getCircleSelectionForTrack(track);
+  const didChange = !areCircleSelectionsEqual(circleSelection.value, nextSelection);
+
+  circleSelection.value = nextSelection;
+
+  return didChange;
+}
+
+function areCircleSelectionsEqual(
+  first: CircleSelection | null,
+  second: CircleSelection | null,
+): boolean {
+  if (!first || !second) {
+    return first === second;
+  }
+
+  if (first.kind !== second.kind) {
+    return false;
+  }
+
+  switch (first.kind) {
+    case "unknown":
+      return true;
+    case "section":
+      return second.kind === "section" && first.section === second.section;
+    case "slice":
+      return (
+        second.kind === "slice" && first.section === second.section && first.slice === second.slice
+      );
+    case "boundary":
+      return (
+        second.kind === "boundary" && Math.abs(first.boundaryIndex - second.boundaryIndex) < 0.01
+      );
+    default:
+      return assertNever(first);
+  }
 }
 
 function getSelectedKeyOrDefault(): TrackKey {
@@ -1461,6 +2284,18 @@ function parseOptionalNumberInput(value: string): number | null {
   }
 
   return parsed;
+}
+
+function parseOptionalPositiveNumber(value: string | number): number | null {
+  const trimmed = String(value).trim();
+
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 function parseDelimitedText(value: string): string[] {
@@ -1651,6 +2486,24 @@ function formatSeconds(value: number): string {
   return value.toFixed(2);
 }
 
+function formatPlaybackTime(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0:00";
+  }
+
+  const totalSeconds = Math.floor(value);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const paddedSeconds = String(seconds).padStart(2, "0");
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${paddedSeconds}`;
+  }
+
+  return `${minutes}:${paddedSeconds}`;
+}
+
 function trackBelongsToSectionSlice(
   track: TrackView,
   sectionIndex: number,
@@ -1776,11 +2629,11 @@ function getBoundaryAfterIndex(index: number): number {
 function getSliceBrowserLabel(slice: SectionSlice): string {
   switch (slice) {
     case "home":
-      return "natural";
+      return t("natural");
     case "pure-clockwise":
-      return "clockwise pure modal";
+      return t("clockwise pure modal");
     case "pure-counter":
-      return "counter pure modal";
+      return t("counter pure modal");
     default:
       return assertNever(slice);
   }
@@ -1802,7 +2655,7 @@ function isDraftTransitionRisky(index: number): boolean {
 }
 
 function sortBrowserTracks(trackList: readonly TrackView[]): TrackView[] {
-  return [...trackList].sort(compareBrowserTracks);
+  return [...trackList].sort(compareBpmDescending);
 }
 
 function getDefaultTrackFilters(): TrackFilters {
@@ -1814,6 +2667,7 @@ function getDefaultTrackFilters(): TrackFilters {
     harmonyNotes: "all",
     keyStatus: "all",
     keyVerification: "all",
+    quality: "all",
     setPresence: "all",
   };
 }
@@ -1827,6 +2681,7 @@ function getActiveTrackFiltersCount(filters: TrackFilters): number {
     filters.harmonyNotes !== "all",
     filters.keyStatus !== "all",
     filters.keyVerification !== "all",
+    filters.quality !== "all",
     filters.setPresence !== "all",
   ].filter(Boolean).length;
 }
@@ -1856,6 +2711,26 @@ function trackMatchesFilters(track: TrackView, filters: TrackFilters): boolean {
   }
 
   if (filters.audio === "missing" && track.audioAvailable) {
+    return false;
+  }
+
+  if (filters.quality === "hq" && track.audioQuality?.status !== "hq") {
+    return false;
+  }
+
+  if (filters.quality === "lossy" && track.audioQuality?.status !== "lossy") {
+    return false;
+  }
+
+  if (filters.quality === "lossy-plus" && !track.audioQuality?.isHighBitrateLossy) {
+    return false;
+  }
+
+  if (
+    filters.quality === "not-analyzed" &&
+    track.audioQuality &&
+    track.audioQuality.status !== "unknown"
+  ) {
     return false;
   }
 
@@ -1894,43 +2769,10 @@ function trackMatchesFilters(track: TrackView, filters: TrackFilters): boolean {
   return true;
 }
 
-function compareSearchResultTracks(first: TrackView, second: TrackView, query: string): number {
-  const firstScore = getTrackSearchScore(first, query);
-  const secondScore = getTrackSearchScore(second, query);
-
-  if (firstScore !== secondScore) {
-    return secondScore - firstScore;
-  }
-
-  const firstIsCleanAdd = isAddButtonRedForTrack(first) ? 0 : 1;
-  const secondIsCleanAdd = isAddButtonRedForTrack(second) ? 0 : 1;
-
-  if (firstIsCleanAdd !== secondIsCleanAdd) {
-    return secondIsCleanAdd - firstIsCleanAdd;
-  }
-
-  const referenceTrack = lastDraftTrack.value;
-
-  if (referenceTrack) {
-    const firstBpmScore = getBpmCompatibilityScore(referenceTrack.bpm, first.bpm);
-    const secondBpmScore = getBpmCompatibilityScore(referenceTrack.bpm, second.bpm);
-
-    if (firstBpmScore !== null && secondBpmScore !== null && firstBpmScore !== secondBpmScore) {
-      return secondBpmScore - firstBpmScore;
-    }
-
-    if (firstBpmScore !== secondBpmScore) {
-      return firstBpmScore === null ? 1 : -1;
-    }
-  }
-
-  return first.title.localeCompare(second.title);
-}
-
 function getTrackSearchScore(track: TrackView, query: string): number {
   const title = normalizeSearchText(track.title);
   const artist = normalizeSearchText(track.artist ?? "");
-  const keyLabel = normalizeSearchText(track.keyLabel);
+  const keyLabel = normalizeSearchText(`${displayKey(track)} ${track.keyLabel}`);
   const tags = track.tags.map((tag) => normalizeSearchText(tag));
   const combined = [title, artist, keyLabel, ...tags].filter(Boolean).join(" ");
 
@@ -1988,40 +2830,8 @@ function parseOptionalFilterNumber(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function compareBrowserTracks(first: TrackView, second: TrackView): number {
-  const referenceTrack = lastDraftTrack.value;
-
-  if (referenceTrack) {
-    const firstScore = getBpmCompatibilityScore(referenceTrack.bpm, first.bpm);
-    const secondScore = getBpmCompatibilityScore(referenceTrack.bpm, second.bpm);
-
-    if (firstScore !== null && secondScore !== null && firstScore !== secondScore) {
-      return secondScore - firstScore;
-    }
-
-    if (firstScore !== secondScore) {
-      return firstScore === null ? 1 : -1;
-    }
-
-    const firstHarmonicScore = canTracksFollow(referenceTrack, first) ? 1 : 0;
-    const secondHarmonicScore = canTracksFollow(referenceTrack, second) ? 1 : 0;
-
-    if (firstHarmonicScore !== secondHarmonicScore) {
-      return secondHarmonicScore - firstHarmonicScore;
-    }
-  }
-
-  const bpmComparison = compareNullableBpmThenTitle(first, second);
-
-  if (bpmComparison !== 0) {
-    return bpmComparison;
-  }
-
-  return first.title.localeCompare(second.title);
-}
-
 function getTrackBpmCompatibilityScore(track: TrackView): number | null {
-  const referenceTrack = lastDraftTrack.value;
+  const referenceTrack = draftTransitionContext.value.referenceTrack;
 
   return referenceTrack ? getBpmCompatibilityScore(referenceTrack.bpm, track.bpm) : null;
 }
@@ -2031,24 +2841,30 @@ function getTrackBpmCompatibilityWidth(track: TrackView): string {
 }
 
 function getTrackBpmCompatibilityScoreLabel(track: TrackView): string {
-  return String(getTrackBpmCompatibilityScore(track) ?? "n/a");
+  return String(getTrackBpmCompatibilityScore(track) ?? "—");
 }
 
 function getTrackBpmCompatibilityTitle(track: TrackView): string {
-  const referenceTrack = lastDraftTrack.value;
+  const referenceTrack = draftTransitionContext.value.referenceTrack;
 
   if (!referenceTrack) {
-    return "No draft endpoint selected";
+    return isReplaceMode.value
+      ? t("No previous track in selected slot")
+      : t("No draft endpoint selected");
   }
 
   if (referenceTrack.bpm === null || track.bpm === null) {
-    return "BPM match unavailable";
+    return t("BPM match unavailable");
   }
 
   const deltaPercent = getBpmDeltaRatio(referenceTrack.bpm, track.bpm) * 100;
   const score = getBpmCompatibilityScore(referenceTrack.bpm, track.bpm);
 
-  return `BPM match against ${referenceTrack.bpm} BPM: ${score}/100, ${deltaPercent.toFixed(1)}% apart`;
+  return t("BPM match against {bpm} BPM: {score}/100, {delta}% apart", {
+    bpm: referenceTrack.bpm,
+    score: score ?? 0,
+    delta: deltaPercent.toFixed(1),
+  });
 }
 
 function getBpmCompatibilityScore(
@@ -2117,15 +2933,13 @@ function getBoundaryCompatibilityClass(boundaryIndex: number): CompatibilityClas
 }
 
 function getCompatibilityClass(candidateTracks: readonly TrackView[]): CompatibilityClass {
-  const referenceKey = lastDraftTrack.value?.key ?? null;
+  const context = draftTransitionContext.value;
 
-  if (!referenceKey || candidateTracks.length === 0) {
+  if ((!context.previousTrack && !context.nextTrack) || candidateTracks.length === 0) {
     return null;
   }
 
-  return candidateTracks.some(
-    (track) => track.key && areKeysTransitionCompatible(referenceKey, track.key),
-  )
+  return candidateTracks.some((track) => !getTrackDraftCompatibility(track).isRisky)
     ? "compatible"
     : "incompatible";
 }
@@ -2144,22 +2958,22 @@ function getBoundaryIndex(placement: TrackView["placement"]): number | null {
 
 function getSelectedPositionLabel(): string {
   if (!circleSelection.value) {
-    return "All tracks";
+    return t("All tracks");
   }
 
   switch (circleSelection.value.kind) {
     case "unknown":
-      return "Unknown key";
+      return t("Unknown key");
     case "boundary": {
       const before = Math.floor(circleSelection.value.boundaryIndex);
       const after = Math.ceil(circleSelection.value.boundaryIndex) % 12;
       const beforeLabel = getSectionDisplayLabel(before);
       const afterLabel = getSectionDisplayLabel(after);
 
-      return `${beforeLabel} / ${afterLabel} boundary`;
+      return t("{keys} boundary", { keys: `${beforeLabel} / ${afterLabel}` });
     }
     case "section":
-      return `${getSectionDisplayLabel(circleSelection.value.section)} section`;
+      return t("{key} section", { key: getSectionDisplayLabel(circleSelection.value.section) });
     case "slice": {
       const sectionLabel = getSectionDisplayLabel(circleSelection.value.section);
 
@@ -2167,9 +2981,9 @@ function getSelectedPositionLabel(): string {
         case "home":
           return sectionLabel;
         case "pure-clockwise":
-          return `${sectionLabel} clockwise modal`;
+          return t("{key} clockwise modal", { key: sectionLabel });
         case "pure-counter":
-          return `${sectionLabel} counter modal`;
+          return t("{key} counter modal", { key: sectionLabel });
         default:
           return assertNever(circleSelection.value.slice);
       }
@@ -2182,29 +2996,29 @@ function getSelectedPositionLabel(): string {
 function getCenterReadout(): CenterReadout {
   if (!circleSelection.value) {
     return {
-      subtitle: "Circle filter off",
-      title: "All tracks",
+      subtitle: t("Circle filter off"),
+      title: t("All tracks"),
     };
   }
 
   switch (circleSelection.value.kind) {
     case "unknown":
       return {
-        subtitle: "Unplaced tracks",
-        title: "Unknown key",
+        subtitle: t("Unplaced tracks"),
+        title: t("Unknown key"),
       };
     case "boundary": {
       const before = Math.floor(circleSelection.value.boundaryIndex);
       const after = Math.ceil(circleSelection.value.boundaryIndex) % 12;
 
       return {
-        subtitle: "Boundary",
+        subtitle: t("Boundary"),
         title: `${getSectionPrimaryDisplayLabel(before)} / ${getSectionPrimaryDisplayLabel(after)}`,
       };
     }
     case "section":
       return {
-        subtitle: "Section",
+        subtitle: t("Section"),
         title: getSectionDisplayLabel(circleSelection.value.section),
       };
     case "slice": {
@@ -2213,17 +3027,17 @@ function getCenterReadout(): CenterReadout {
       switch (circleSelection.value.slice) {
         case "home":
           return {
-            subtitle: "Natural",
+            subtitle: t("Natural"),
             title: sectionLabel,
           };
         case "pure-clockwise":
           return {
-            subtitle: "Clockwise modal",
+            subtitle: t("Clockwise modal"),
             title: sectionLabel,
           };
         case "pure-counter":
           return {
-            subtitle: "Counter modal",
+            subtitle: t("Counter modal"),
             title: sectionLabel,
           };
         default:
@@ -2287,35 +3101,41 @@ function isUnknownKeySelected(): boolean {
 }
 
 function getBrowserEmptyTitle(): string {
-  return isBrowserFiltered.value ? "No tracks found" : "No tracks yet";
+  if (isLoading.value) return t("Loading tracks…");
+  return isBrowserFiltered.value ? t("No tracks found") : t("No tracks yet");
 }
 
 function getBrowserEmptyCopy(): string {
+  if (isLoading.value) return t("Opening the catalog.");
   if (isTrackSearchActive.value) {
-    return "Try a different query or filter set.";
+    return t("Try a different query or filter set.");
   }
 
   if (hasActiveCircleSelection.value) {
     return selectedLabel.value;
   }
 
-  return "Add or import tracks to start browsing the catalog.";
+  return isPublicMode.value
+    ? t("The public catalog is not available yet. Please check back later.")
+    : "Add or import tracks to start browsing the catalog.";
 }
 
 function isLastDraftSection(index: number): boolean {
-  return lastDraftTrack.value
-    ? getTrackTouchedSections(lastDraftTrack.value).includes(index)
+  return draftTransitionContext.value.referenceTrack
+    ? getTrackTouchedSections(draftTransitionContext.value.referenceTrack).includes(index)
     : false;
 }
 
 function isLastDraftSectionSlice(index: number, slice: SectionSlice): boolean {
-  return lastDraftTrack.value
-    ? trackBelongsToSectionSlice(lastDraftTrack.value, index, slice)
+  return draftTransitionContext.value.referenceTrack
+    ? trackBelongsToSectionSlice(draftTransitionContext.value.referenceTrack, index, slice)
     : false;
 }
 
 function isLastDraftBoundary(boundaryIndex: number): boolean {
-  return lastDraftTrack.value ? trackTouchesBoundary(lastDraftTrack.value, boundaryIndex) : false;
+  return draftTransitionContext.value.referenceTrack
+    ? trackTouchesBoundary(draftTransitionContext.value.referenceTrack, boundaryIndex)
+    : false;
 }
 
 function getSignedCircularOffset(from: number, to: number): number {
@@ -2348,20 +3168,209 @@ function indexToAngle(index: number): number {
 function confidenceLabel(state: VerificationState): string {
   switch (state) {
     case "confirmed":
-      return "confirmed";
+      return t("confirmed");
     case "estimated":
-      return "unverified";
+      return t("unverified");
     default:
       return state;
   }
 }
 
 function formatBpm(bpm: number | null): string {
-  return bpm === null ? "Unknown BPM" : `${bpm} BPM`;
+  return bpm === null ? t("Unknown BPM") : `${bpm} BPM`;
 }
 
 function formatBpmValue(bpm: number | null): string {
-  return bpm === null ? "Unknown" : String(bpm);
+  return bpm === null ? t("Unknown") : String(bpm);
+}
+
+function shouldShowTrackAudioBadge(track: TrackView): boolean {
+  return !track.audioAvailable || track.audioQuality?.status !== undefined;
+}
+
+function getTrackAudioBadgeLabel(track: TrackView): string {
+  if (!track.audioAvailable) {
+    return t("No audio");
+  }
+
+  const quality = track.audioQuality;
+
+  if (!quality || quality.status === "unknown") {
+    return t("Unknown");
+  }
+
+  return getAudioQualityBadgeLabel(quality);
+}
+
+function getTrackAudioBadgeClass(track: TrackView): string {
+  if (!track.audioAvailable) {
+    return "audio-quality-missing";
+  }
+
+  const quality = track.audioQuality;
+
+  if (!quality) {
+    return "audio-quality-unknown";
+  }
+
+  if (quality.isHighBitrateLossy) {
+    return "audio-quality-lossy-plus";
+  }
+
+  return `audio-quality-${quality.status}`;
+}
+
+function getAudioQualityBadgeLabel(quality: NonNullable<TrackView["audioQuality"]>): string {
+  if (quality.isHighBitrateLossy) {
+    return t("Lossy+");
+  }
+
+  switch (quality.status) {
+    case "hq":
+      return "HQ";
+    case "lossy":
+      return t("Lossy");
+    case "unknown":
+      return t("Unknown");
+    default:
+      return assertNever(quality.status);
+  }
+}
+
+function formatTrackAudioQualitySummary(track: TrackView): string {
+  if (!track.audioAvailable) {
+    return t("No audio linked");
+  }
+
+  return formatAudioQualitySummary(track.audioQuality);
+}
+
+function formatAudioQualitySummary(quality: TrackView["audioQuality"]): string {
+  if (!quality) {
+    return t("Not analyzed");
+  }
+
+  if (quality.status === "unknown") {
+    return quality.probeError ? t("Probe failed") : t("Unknown");
+  }
+
+  const label = getAudioQualityLabel(quality);
+  const sampleRate = formatSampleRate(quality.sampleRateHz);
+  const codec = formatCodecLabel(quality.codec ?? getPrimaryContainer(quality.container));
+
+  if (quality.status === "hq") {
+    return joinAudioQualityParts([
+      label,
+      joinAudioQualityParts([formatBitDepth(quality.bitDepth), sampleRate], " / "),
+      codec,
+    ]);
+  }
+
+  return joinAudioQualityParts([
+    label,
+    joinAudioQualityParts(
+      [
+        joinAudioQualityParts(
+          [codec, formatBitrateMode(quality.bitrateMode), formatBitrate(quality)],
+          " ",
+        ),
+        sampleRate,
+      ],
+      " / ",
+    ),
+  ]);
+}
+
+function getAudioQualityLabel(quality: NonNullable<TrackView["audioQuality"]>): string {
+  if (quality.isHighBitrateLossy) {
+    return t("LOSSY+");
+  }
+
+  switch (quality.status) {
+    case "hq":
+      return "HQ";
+    case "lossy":
+      return t("LOSSY");
+    case "unknown":
+      return t("Unknown");
+    default:
+      return assertNever(quality.status);
+  }
+}
+
+function formatBitDepth(bitDepth: number | null): string | null {
+  return bitDepth === null ? null : t("{bits}-bit", { bits: bitDepth });
+}
+
+function formatSampleRate(sampleRateHz: number | null): string | null {
+  if (sampleRateHz === null) {
+    return null;
+  }
+
+  const kiloHertz = sampleRateHz / 1000;
+  const rounded = Number(kiloHertz.toFixed(1));
+
+  return t("{rate} kHz", { rate: Number.isInteger(kiloHertz) ? kiloHertz : rounded });
+}
+
+function formatBitrate(quality: NonNullable<TrackView["audioQuality"]>): string | null {
+  if (quality.bitrateKbps === null) {
+    return null;
+  }
+
+  return t("{rate} kbps", {
+    rate: `${quality.bitrateMode === "vbr" ? "~" : ""}${quality.bitrateKbps}`,
+  });
+}
+
+function formatBitrateMode(
+  mode: NonNullable<TrackView["audioQuality"]>["bitrateMode"],
+): string | null {
+  switch (mode) {
+    case "cbr":
+      return "CBR";
+    case "vbr":
+      return "VBR";
+    case "unknown":
+      return null;
+    default:
+      return assertNever(mode);
+  }
+}
+
+function formatCodecLabel(codec: string | null): string | null {
+  if (!codec) {
+    return null;
+  }
+
+  switch (codec) {
+    case "aac":
+      return "AAC";
+    case "alac":
+      return "ALAC";
+    case "flac":
+      return "FLAC";
+    case "mp3":
+      return "MP3";
+    case "opus":
+      return "Opus";
+    case "vorbis":
+      return "Vorbis";
+    default:
+      return codec.replace(/_/g, " ").toLocaleUpperCase();
+  }
+}
+
+function getPrimaryContainer(container: string | null): string | null {
+  if (!container) {
+    return null;
+  }
+
+  return container.split(",")[0]?.trim() || null;
+}
+
+function joinAudioQualityParts(parts: readonly (string | null)[], separator = " · "): string {
+  return parts.filter((part): part is string => Boolean(part)).join(separator);
 }
 
 function formatEditableBpm(bpm: number): string {
@@ -2371,13 +3380,13 @@ function formatEditableBpm(bpm: number): string {
 function placementLaneLabel(lane: PlacementLane | undefined): string {
   switch (lane) {
     case "home":
-      return "natural";
+      return t("natural");
     case "modal-mixture":
-      return "modal mixture";
+      return t("modal mixture");
     case "pure-modal":
-      return "pure modal";
+      return t("pure modal");
     case undefined:
-      return "unknown key";
+      return t("unknown key");
     default:
       return assertNever(lane);
   }
@@ -2389,155 +3398,91 @@ function assertNever(value: never): never {
 </script>
 
 <template>
-  <main class="desk-shell">
+  <main class="desk-shell" :class="{ 'public-mode': isPublicMode }">
     <header class="desk-header">
-      <div>
+      <div class="desk-brand">
         <p class="eyebrow">DJ Desk</p>
-        <h1>Modal circle workspace</h1>
-      </div>
-      <div class="track-search-area" role="search">
-        <label class="track-search-field">
-          <span class="visually-hidden">Search tracks</span>
-          <input
-            :value="trackSearchQuery"
-            type="search"
-            placeholder="Search tracks"
-            @input="updateTrackSearchQuery"
-            @keydown.enter.prevent="selectFirstSearchResult"
-            @keydown.escape.prevent="clearTrackSearch"
-          />
-          <button
-            v-if="trackSearchQuery"
-            type="button"
-            class="icon-button search-clear-button"
-            title="Clear search"
-            @click="clearTrackSearch"
-          >
-            ×
-          </button>
-        </label>
-        <div class="track-filter-shell">
-          <button
-            type="button"
-            class="filter-toggle-button"
-            :class="{ active: areTrackFiltersOpen || activeTrackFiltersCount > 0 }"
-            @click="areTrackFiltersOpen = !areTrackFiltersOpen"
-          >
-            Filters
-            <span v-if="activeTrackFiltersCount > 0">{{ activeTrackFiltersCount }}</span>
-          </button>
-          <div v-if="areTrackFiltersOpen" class="track-filter-panel">
-            <div class="filter-grid">
-              <label>
-                <span>Key</span>
-                <select v-model="trackFilters.keyStatus" @change="setActiveMobilePanel('tracks')">
-                  <option value="all">Any key</option>
-                  <option value="known">Known key</option>
-                  <option value="unknown">Unknown key</option>
-                </select>
-              </label>
-              <label>
-                <span>Audio</span>
-                <select v-model="trackFilters.audio" @change="setActiveMobilePanel('tracks')">
-                  <option value="all">Any audio</option>
-                  <option value="linked">Audio linked</option>
-                  <option value="missing">Audio missing</option>
-                </select>
-              </label>
-              <label>
-                <span>BPM min</span>
-                <input
-                  v-model="trackFilters.bpmMin"
-                  type="number"
-                  min="1"
-                  step="0.01"
-                  placeholder="Any"
-                  @input="setActiveMobilePanel('tracks')"
-                />
-              </label>
-              <label>
-                <span>BPM max</span>
-                <input
-                  v-model="trackFilters.bpmMax"
-                  type="number"
-                  min="1"
-                  step="0.01"
-                  placeholder="Any"
-                  @input="setActiveMobilePanel('tracks')"
-                />
-              </label>
-              <label>
-                <span>Key state</span>
-                <select
-                  v-model="trackFilters.keyVerification"
-                  @change="setActiveMobilePanel('tracks')"
-                >
-                  <option value="all">Any key state</option>
-                  <option value="confirmed">Confirmed</option>
-                  <option value="unverified">Unverified</option>
-                </select>
-              </label>
-              <label>
-                <span>BPM state</span>
-                <select
-                  v-model="trackFilters.bpmVerification"
-                  @change="setActiveMobilePanel('tracks')"
-                >
-                  <option value="all">Any BPM state</option>
-                  <option value="confirmed">Confirmed</option>
-                  <option value="unverified">Unverified</option>
-                </select>
-              </label>
-              <label>
-                <span>Harmony</span>
-                <select
-                  v-model="trackFilters.harmonyNotes"
-                  @change="setActiveMobilePanel('tracks')"
-                >
-                  <option value="all">Any notes</option>
-                  <option value="with-notes">Has notes</option>
-                  <option value="without-notes">No notes</option>
-                </select>
-              </label>
-              <label>
-                <span>Sets</span>
-                <select v-model="trackFilters.setPresence" @change="setActiveMobilePanel('tracks')">
-                  <option value="all">Any set use</option>
-                  <option value="in-set">Already in set</option>
-                  <option value="not-in-set">Not in set</option>
-                </select>
-              </label>
-            </div>
-            <div class="filter-actions">
-              <button
-                type="button"
-                class="secondary-action-button"
-                :disabled="activeTrackFiltersCount === 0"
-                @click="resetTrackFilters"
-              >
-                Reset filters
-              </button>
-            </div>
-          </div>
+        <div class="desk-preferences">
+          <label class="language-control">
+            <span class="visually-hidden">{{ t("Language") }}</span>
+            <select v-model="locale" :aria-label="t('Language')">
+              <option value="ru">RU</option>
+              <option value="en">EN</option>
+            </select>
+          </label>
+          <HelpDialog />
         </div>
+        <label class="notation-control">
+          <span>{{ t("Key notation") }}</span>
+          <select v-model="keyNotation">
+            <option value="letters">A / B / C</option>
+            <option value="solfege">{{ t("Do / Re / Mi") }}</option>
+            <option value="camelot">Camelot</option>
+            <option value="open-key">Open Key</option>
+          </select>
+        </label>
       </div>
-      <div class="summary-strip" aria-label="Track analysis summary">
+      <section class="global-player" :aria-label="t('Now playing')">
+        <button
+          type="button"
+          class="global-player-toggle"
+          :disabled="!canControlSelectedAudio"
+          :title="isAudioPlaying ? t('Pause') : t('Play')"
+          @click="toggleGlobalPlayerPlayback"
+        >
+          {{ isAudioPlaying ? t("Pause") : t("Play") }}
+        </button>
+        <button
+          type="button"
+          class="global-player-tempo-toggle"
+          :class="{ active: isTempoPreviewEnabled }"
+          :disabled="!canControlSelectedAudio"
+          :title="tempoPreviewStatus"
+          @click="toggleTempoPreview"
+        >
+          {{ t("Tempo") }}
+        </button>
+        <div class="global-player-copy">
+          <strong>{{ globalPlayerTitle }}</strong>
+          <small>{{ globalPlayerArtist }}</small>
+        </div>
+        <div class="global-player-timeline">
+          <input
+            type="range"
+            min="0"
+            step="0.1"
+            :max="audioDuration || 0"
+            :value="audioCurrentTime"
+            :disabled="!canControlSelectedAudio || audioDuration <= 0"
+            :aria-label="t('Seek focused track')"
+            @input="seekGlobalPlayer"
+          />
+          <span>{{ globalPlayerTimeLabel }}</span>
+        </div>
+        <div class="global-player-meta">
+          <strong>{{ globalPlayerStatus }}</strong>
+          <small>{{ globalPlayerMeta }}</small>
+        </div>
+      </section>
+      <div class="summary-strip" :aria-label="t('Track analysis summary')">
         <span>
-          <strong>{{ visibleTracks.length }}</strong>
-          tracks
-        </span>
+          <strong>{{ visibleTracks.length }}</strong
+          >{{
+            trackCount(visibleTracks.length).slice(String(visibleTracks.length).length + 1)
+          }}</span
+        >
         <span>
-          <strong>{{ confirmedCount }}</strong>
-          confirmed keys
-        </span>
+          <strong>{{ confirmedCount }}</strong
+          >{{ t("confirmed keys") }}</span
+        >
         <span>
-          <strong>{{ unknownKeyCount }}</strong>
-          unknown keys
-        </span>
+          <strong>{{ unknownKeyCount }}</strong
+          >{{ t("unknown keys") }}</span
+        >
         <span>
-          <strong>{{ mixtureCount }}</strong>
-          mixed modes
-        </span>
+          <strong>{{ mixtureCount }}</strong
+          >{{ t("mixed modes") }}</span
+        >
       </div>
     </header>
 
@@ -2545,13 +3490,13 @@ function assertNever(value: never): never {
       <section
         class="wheel-panel"
         :class="{ 'mobile-active': activeMobilePanel === 'map' }"
-        aria-label="Circle of fifths desk"
+        :aria-label="t('Circle of fifths desk')"
         @click="clearCircleSelection"
       >
-        <div v-if="isLoading" class="state-line">Loading modal map...</div>
-        <div v-else-if="errorMessage" class="state-line error">{{ errorMessage }}</div>
+        <div v-if="isLoading" class="state-line">{{ t("Loading modal map...") }}</div>
+        <div v-else-if="errorMessage" class="state-line error">{{ message(errorMessage) }}</div>
         <svg v-else class="circle-map" viewBox="-300 -300 600 600" role="img">
-          <title>Tracks arranged by modal position on the circle of fifths</title>
+          <title>{{ t("Tracks arranged by modal position on the circle of fifths") }}</title>
           <g>
             <path
               v-for="section in sections"
@@ -2718,20 +3663,100 @@ function assertNever(value: never): never {
       <aside
         class="set-chain"
         :class="{ 'mobile-active': activeMobilePanel === 'set' }"
-        aria-label="Draft set chain"
+        :aria-label="t('Draft set chain')"
       >
         <div class="panel-heading">
           <div>
-            <p class="eyebrow">Sets</p>
-            <h2>{{ activeDraftSet?.name ?? "No set yet" }}</h2>
+            <p class="eyebrow">{{ t("Sets") }}</p>
+            <h2>{{ activeDraftSet?.name ?? t("No set yet") }}</h2>
           </div>
           <strong>{{ draftTracks.length }}</strong>
         </div>
         <form class="new-set-form" @submit.prevent="createDraftSetFromInput">
-          <input v-model="newSetName" type="text" placeholder="New set name" />
-          <button type="submit" :disabled="isSetSaving">Create</button>
+          <input
+            v-model="newSetName"
+            type="text"
+            :placeholder="t('New set name')"
+            maxlength="120"
+            :aria-label="t('New set name')"
+          />
+          <button type="submit" :disabled="isSetSaving || !isWorkspaceReady">
+            {{ t("Create") }}
+          </button>
         </form>
-        <div class="set-tabs" aria-label="Draft set selector">
+        <p v-if="workspaceError" class="mutation-error" role="alert">
+          {{ message(workspaceError) }} <a href="/">{{ t("Back to catalogue") }}</a>
+        </p>
+        <p v-if="isPublicMode && !hasWorkspace && !workspaceError" class="workspace-hint">
+          {{
+            t(
+              "Pick a track and press Add to start your first set. Save your private access link to continue on another device. No account needed.",
+            )
+          }}
+        </p>
+        <div v-if="isPublicMode && hasWorkspace" class="workspace-access">
+          <template v-if="accessLink">
+            <label
+              >{{ t("Private access link")
+              }}<input
+                :value="accessLink"
+                type="text"
+                readonly
+                autocomplete="off"
+                spellcheck="false"
+                @focus="($event.target as HTMLInputElement).select()"
+            /></label>
+            <button type="button" @click="copyAccessLink">{{ t("Copy link") }}</button>
+            <button
+              type="button"
+              @click="
+                accessLink = '';
+                accessMessage = '';
+              "
+            >
+              {{ t("I saved it · Hide") }}
+            </button>
+          </template>
+          <button
+            v-else
+            type="button"
+            :disabled="isAccessBusy || isSetSaving"
+            @click="replaceAccessLink"
+          >
+            {{ t("Create a new access link") }}
+          </button>
+          <p v-if="accessMessage" role="status">{{ message(accessMessage) }}</p>
+          <small v-else>{{
+            t("Your sets are saved online. Keep your secret link to reopen them on another device.")
+          }}</small>
+        </div>
+        <p
+          v-if="activeDraftSet"
+          class="save-status"
+          :class="{ failed: activeSaveFailure }"
+          role="status"
+          aria-live="polite"
+        >
+          {{ saveStatus }}
+        </p>
+        <div v-if="activeSaveFailure" class="save-recovery" role="alert">
+          <p>{{ message(activeSaveFailure.message) }}</p>
+          <button
+            v-if="!activeSaveFailure.conflict"
+            type="button"
+            :disabled="isSetSaving"
+            @click="retryActiveSetSave"
+          >
+            {{ t("Retry save") }}
+          </button>
+          <button type="button" :disabled="isSetSaving" @click="reloadActiveSet">
+            {{ t("Load saved version") }}
+          </button>
+          <button type="button" :disabled="isSetSaving" @click="copyUnsavedSet">
+            {{ t("Save my version as a copy") }}
+          </button>
+        </div>
+        <div class="set-tabs" :aria-label="t('Draft set selector')">
           <button
             v-for="draftSet in draftSets"
             :key="draftSet.id"
@@ -2749,6 +3774,9 @@ function assertNever(value: never): never {
             v-model="renameSetName"
             type="text"
             :disabled="activeDraftSet.isDemo"
+            maxlength="120"
+            :aria-label="t('Set name')"
+            @input="scheduleSetNameSave"
             @blur="saveActiveSetName"
             @keydown.enter.prevent="saveActiveSetName"
           />
@@ -2756,47 +3784,42 @@ function assertNever(value: never): never {
             type="button"
             class="icon-button remove-button"
             :disabled="isSetSaving"
-            title="Delete set"
+            :title="t('Delete set')"
             @click="deleteActiveSet"
           >
             ×
           </button>
         </div>
-        <p v-if="setErrorMessage" class="mutation-error">{{ setErrorMessage }}</p>
+        <p v-if="setErrorMessage" class="mutation-error">{{ message(setErrorMessage) }}</p>
         <button
           type="button"
           class="sort-harmonic-button"
           :disabled="activeDraftTrackIds.length < 2 || isSetSaving"
-          title="Reorder this draft set to maximize harmonic transitions"
+          :title="t('Reorder this draft set to maximize harmonic transitions')"
           @click="sortActiveDraftHarmonically"
         >
-          Sort harmonically
+          {{ t("Sort harmonically") }}
         </button>
         <p v-if="draftSets.length === 0" class="empty-state">
-          Create a set to start saving a real running order.
+          {{ t("Create a set to start saving a real running order.") }}
         </p>
-        <ol v-else>
+        <ol v-else ref="setChainList">
           <li
             v-for="(track, index) in draftTracks"
             :key="`${track.id}-${index}`"
             :class="{
               dragging: draggedDraftIndex === index,
               'drag-over': dragOverDraftIndex === index,
+              selected: selectedDraftIndex === index,
             }"
-            draggable="true"
-            @dragstart="startDraftDrag($event, index)"
-            @dragenter.prevent="enterDraftDropTarget(index)"
-            @dragover.prevent="enterDraftDropTarget(index)"
-            @drop="dropDraftTrack($event, index)"
-            @dragend="endDraftDrag"
           >
             <div
               v-if="isDraftTransitionRisky(index)"
               class="chain-transition-divider"
-              title="Non-harmonic transition between these tracks"
+              :title="t('Non-harmonic transition between these tracks')"
             >
               <span></span>
-              <strong>Non-harmonic transition</strong>
+              <strong>{{ t("Non-harmonic transition") }}</strong>
               <span></span>
             </div>
             <button type="button" class="chain-track" @click="selectTrack(track)">
@@ -2806,19 +3829,45 @@ function assertNever(value: never): never {
                 <span
                   v-if="hasHarmonyNotes(track)"
                   class="inline-harmony-badge"
-                  title="Special harmony note"
+                  :title="t('Special harmony note')"
                 >
                   !
                 </span>
               </strong>
-              <small>{{ formatBpm(track.bpm) }} · {{ track.keyLabel }}</small>
+              <span
+                v-if="shouldShowTrackAudioBadge(track)"
+                class="audio-badge chain-track-quality"
+                :class="getTrackAudioBadgeClass(track)"
+                :title="formatTrackAudioQualitySummary(track)"
+              >
+                {{ getTrackAudioBadgeLabel(track) }}
+              </span>
+              <small>{{ formatBpm(track.bpm) }} · {{ displayKey(track) }}</small>
             </button>
-            <div class="chain-controls" aria-label="Draft track controls">
+            <div class="chain-controls" :aria-label="t('Draft track controls')">
+              <button
+                type="button"
+                class="icon-button replace-target-button"
+                :class="{ active: selectedDraftIndex === index }"
+                :title="t('Use as replacement target')"
+                :aria-label="t('Use as replacement target')"
+                @click.stop="selectDraftReplacementTarget(index, track)"
+              >
+                ◎
+              </button>
+              <button
+                type="button"
+                class="icon-button drag-handle"
+                :title="t('Drag to reorder')"
+                :aria-label="t('Drag to reorder')"
+              >
+                ↕
+              </button>
               <button
                 type="button"
                 class="icon-button move-button"
                 :disabled="index === 0"
-                title="Move up"
+                :title="t('Move up')"
                 @click="moveDraftTrack(index, -1)"
               >
                 ↑
@@ -2827,7 +3876,7 @@ function assertNever(value: never): never {
                 type="button"
                 class="icon-button move-button"
                 :disabled="index === draftTracks.length - 1"
-                title="Move down"
+                :title="t('Move down')"
                 @click="moveDraftTrack(index, 1)"
               >
                 ↓
@@ -2835,7 +3884,7 @@ function assertNever(value: never): never {
               <button
                 type="button"
                 class="icon-button remove-button"
-                title="Remove"
+                :title="t('Remove')"
                 @click="removeFromDraftAt(index)"
               >
                 ×
@@ -2848,7 +3897,7 @@ function assertNever(value: never): never {
       <section
         class="track-browser"
         :class="{ 'mobile-active': activeMobilePanel === 'tracks' }"
-        aria-label="Tracks browser"
+        :aria-label="t('Tracks browser')"
       >
         <div class="panel-heading browser-panel-heading">
           <div class="browser-heading-copy">
@@ -2860,20 +3909,206 @@ function assertNever(value: never): never {
                 class="browser-reset-chip"
                 @click="clearCircleSelection"
               >
-                All tracks
+                {{ t("All tracks") }}
               </button>
             </div>
             <h2>{{ browserTitle }}</h2>
           </div>
+          <div class="track-search-area browser-search-area" role="search">
+            <label class="track-search-field">
+              <span class="visually-hidden">{{ t("Search tracks") }}</span>
+              <input
+                :value="trackSearchQuery"
+                type="search"
+                :placeholder="t('Search tracks')"
+                @input="updateTrackSearchQuery"
+                @keydown.enter.prevent="selectFirstSearchResult"
+                @keydown.escape.prevent="clearTrackSearch"
+              />
+              <button
+                v-if="trackSearchQuery"
+                type="button"
+                class="icon-button search-clear-button"
+                :title="t('Clear search')"
+                @click="clearTrackSearch"
+              >
+                ×
+              </button>
+            </label>
+            <div class="track-filter-shell">
+              <button
+                type="button"
+                class="filter-toggle-button"
+                :class="{ active: areTrackFiltersOpen || activeTrackFiltersCount > 0 }"
+                @click="areTrackFiltersOpen = !areTrackFiltersOpen"
+              >
+                {{ t("Filters")
+                }}<span v-if="activeTrackFiltersCount > 0">{{ activeTrackFiltersCount }}</span>
+              </button>
+              <div v-if="areTrackFiltersOpen" class="track-filter-panel">
+                <div class="filter-grid">
+                  <label>
+                    <span>{{ t("Key") }}</span>
+                    <select
+                      v-model="trackFilters.keyStatus"
+                      @change="setActiveMobilePanel('tracks')"
+                    >
+                      <option value="all">{{ t("Any key") }}</option>
+                      <option value="known">{{ t("Known key") }}</option>
+                      <option value="unknown">{{ t("Unknown key") }}</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>{{ t("Audio") }}</span>
+                    <select v-model="trackFilters.audio" @change="setActiveMobilePanel('tracks')">
+                      <option value="all">{{ t("Any audio") }}</option>
+                      <option value="linked">{{ t("Audio linked") }}</option>
+                      <option value="missing">{{ t("Audio missing") }}</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>{{ t("Quality") }}</span>
+                    <select v-model="trackFilters.quality" @change="setActiveMobilePanel('tracks')">
+                      <option value="all">{{ t("Any quality") }}</option>
+                      <option value="hq">{{ t("True HQ") }}</option>
+                      <option value="lossy">{{ t("Lossy") }}</option>
+                      <option value="lossy-plus">{{ t("High-bitrate lossy") }}</option>
+                      <option value="not-analyzed">{{ t("Not analyzed") }}</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>{{ t("BPM min") }}</span>
+                    <input
+                      v-model="trackFilters.bpmMin"
+                      type="number"
+                      min="1"
+                      step="0.01"
+                      :placeholder="t('Any')"
+                      @input="setActiveMobilePanel('tracks')"
+                    />
+                  </label>
+                  <label>
+                    <span>{{ t("BPM max") }}</span>
+                    <input
+                      v-model="trackFilters.bpmMax"
+                      type="number"
+                      min="1"
+                      step="0.01"
+                      :placeholder="t('Any')"
+                      @input="setActiveMobilePanel('tracks')"
+                    />
+                  </label>
+                  <label>
+                    <span>{{ t("Key state") }}</span>
+                    <select
+                      v-model="trackFilters.keyVerification"
+                      @change="setActiveMobilePanel('tracks')"
+                    >
+                      <option value="all">{{ t("Any key state") }}</option>
+                      <option value="confirmed">{{ t("Confirmed") }}</option>
+                      <option value="unverified">{{ t("Unverified") }}</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>{{ t("BPM state") }}</span>
+                    <select
+                      v-model="trackFilters.bpmVerification"
+                      @change="setActiveMobilePanel('tracks')"
+                    >
+                      <option value="all">{{ t("Any BPM state") }}</option>
+                      <option value="confirmed">{{ t("Confirmed") }}</option>
+                      <option value="unverified">{{ t("Unverified") }}</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>{{ t("Harmony") }}</span>
+                    <select
+                      v-model="trackFilters.harmonyNotes"
+                      @change="setActiveMobilePanel('tracks')"
+                    >
+                      <option value="all">{{ t("Any notes") }}</option>
+                      <option value="with-notes">{{ t("Has notes") }}</option>
+                      <option value="without-notes">{{ t("No notes") }}</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>{{ t("Sets") }}</span>
+                    <select
+                      v-model="trackFilters.setPresence"
+                      @change="setActiveMobilePanel('tracks')"
+                    >
+                      <option value="all">{{ t("Any set use") }}</option>
+                      <option value="in-set">{{ t("Already in set") }}</option>
+                      <option value="not-in-set">{{ t("Not in set") }}</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="filter-actions">
+                  <button
+                    type="button"
+                    class="secondary-action-button"
+                    :disabled="activeTrackFiltersCount === 0"
+                    @click="resetTrackFilters"
+                  >
+                    {{ t("Reset filters") }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div v-if="isReplaceMode" class="replace-mode-banner">
+            <div>
+              <span class="replace-mode-title">{{ replaceModeTitle }}</span>
+              <span class="replace-mode-track">{{
+                selectedDraftSlotTrack?.title ?? t("Selected set slot")
+              }}</span>
+              <span class="replace-mode-meta">{{ replaceModeSubtitle }}</span>
+            </div>
+            <button type="button" class="secondary-action-button" @click="clearSelectedDraftSlot">
+              {{ t("Append to end") }}
+            </button>
+          </div>
           <div class="track-browser-actions">
-            <button type="button" class="secondary-action-button" @click="openNewTrackDialog">
+            <div class="target-bpm-control">
+              <label class="target-bpm-field">
+                <span>{{ t("Target BPM") }}</span>
+                <input
+                  v-model="targetBpmDraft"
+                  type="number"
+                  min="1"
+                  step="0.01"
+                  placeholder="80"
+                  @blur="jumpToTargetBpm"
+                  @keydown.enter.prevent="jumpToTargetBpm"
+                />
+              </label>
+              <button
+                type="button"
+                class="secondary-action-button target-bpm-go-button"
+                @click="jumpToTargetBpm"
+              >
+                {{ t("Go") }}
+              </button>
+            </div>
+            <button
+              v-if="canEditCatalog"
+              type="button"
+              class="secondary-action-button"
+              @click="openNewTrackDialog"
+            >
               New track
             </button>
             <button
               type="button"
               class="add-button"
               :class="{ risky: isAddTransitionRisky, used: selectedTrackInAnyDraftSet }"
-              :disabled="!selectedTrack || !activeDraftSet || isSetSaving"
+              :disabled="
+                !selectedTrack ||
+                (!activeDraftSet && !isPublicMode) ||
+                !isWorkspaceReady ||
+                (isSetSaving && !activeDraftSet) ||
+                !tracks.some((track) => track.id === selectedTrack?.id)
+              "
               :title="addButtonTitle"
               @click="addSelectedTrack"
             >
@@ -2884,7 +4119,7 @@ function assertNever(value: never): never {
               :class="{ visible: addButtonReason }"
               :aria-hidden="addButtonReason ? 'false' : 'true'"
             >
-              {{ addButtonReason || "Ready" }}
+              {{ addButtonReason || t("Ready") }}
             </span>
           </div>
         </div>
@@ -2898,30 +4133,36 @@ function assertNever(value: never): never {
             class="secondary-action-button"
             @click="clearTrackSearchMode"
           >
-            Clear search
+            {{ t("Clear search") }}
           </button>
         </div>
-        <div v-else class="browser-grid">
+        <div v-else ref="browserGrid" class="browser-grid">
           <button
             v-for="track in browserTracks"
             :key="track.id"
             type="button"
             class="track-row"
             :class="{ selected: selectedTrack?.id === track.id }"
-            @click="selectTrack(track)"
+            :data-track-id="track.id"
+            @click="selectBrowserTrack(track)"
           >
             <span class="row-badges">
               <span class="mode-chip" :class="track.placement?.lane ?? 'unknown-key'">
                 {{ placementLaneLabel(track.placement?.lane) }}
               </span>
               <span class="row-icon-badges">
-                <span v-if="track.audioAvailable" class="audio-badge" title="Audio linked">
-                  audio
+                <span
+                  v-if="shouldShowTrackAudioBadge(track)"
+                  class="audio-badge"
+                  :class="getTrackAudioBadgeClass(track)"
+                  :title="formatTrackAudioQualitySummary(track)"
+                >
+                  {{ getTrackAudioBadgeLabel(track) }}
                 </span>
                 <span
                   v-if="hasHarmonyNotes(track)"
                   class="harmony-badge"
-                  title="Special harmony note"
+                  :title="t('Special harmony note')"
                 >
                   !
                 </span>
@@ -2941,7 +4182,7 @@ function assertNever(value: never): never {
               </span>
               <span class="meta-separator">·</span>
               <span>
-                {{ track.keyLabel }}
+                {{ displayKey(track) }}
                 <span
                   v-if="track.confidence.key !== 'confirmed'"
                   class="inline-confidence"
@@ -2952,19 +4193,18 @@ function assertNever(value: never): never {
                 <span
                   v-if="track.nonStandardTuning"
                   class="inline-confidence non-standard-tuning"
-                  title="Not aligned to standard A=440 Hz tuning"
+                  :title="t('Not aligned to standard A=440 Hz tuning')"
+                  >{{ t("non-440") }}</span
                 >
-                  non-440
-                </span>
               </span>
             </small>
             <span
-              v-if="lastDraftTrack"
+              v-if="draftTransitionContext.referenceTrack"
               class="bpm-score"
               :title="getTrackBpmCompatibilityTitle(track)"
             >
               <span class="bpm-score-label">
-                <span>BPM match</span>
+                <span>{{ t("BPM match") }}</span>
                 <span class="bpm-score-value">{{ getTrackBpmCompatibilityScoreLabel(track) }}</span>
               </span>
               <span
@@ -2982,27 +4222,67 @@ function assertNever(value: never): never {
       <aside
         class="focus-panel"
         :class="{ 'mobile-active': activeMobilePanel === 'focus' }"
-        aria-label="Selected track"
+        :aria-label="t('Selected track')"
       >
-        <p class="eyebrow">Focus track</p>
+        <p class="eyebrow">{{ t("Focus track") }}</p>
         <template v-if="selectedTrack">
           <h2>{{ selectedTrack.title }}</h2>
           <p class="artist">{{ selectedTrack.artist }}</p>
           <section class="track-audio-panel" :class="{ empty: !selectedTrack.audioAvailable }">
             <div class="track-audio-heading">
-              <span>Audio</span>
-              <small>{{ selectedTrack.audioFileName ?? "Not linked" }}</small>
+              <span>{{ t("Audio") }}</span>
+              <small>{{ selectedTrack.audioFileName ?? t("Not linked") }}</small>
             </div>
             <audio
               v-if="selectedTrack.audioUrl"
               ref="audioPlayer"
               :key="selectedTrack.id"
+              :data-track-id="selectedTrack.id"
+              :data-tempo-preview-enabled="String(isTempoPreviewEnabled)"
+              :data-tempo-preview-rate="tempoPreviewRate.toFixed(4)"
               controls
               preload="metadata"
               :src="selectedTrack.audioUrl"
+              @durationchange="handleAudioMetadataChange"
+              @ended="handleAudioEnded"
+              @loadedmetadata="handleAudioMetadataChange"
+              @play="handleAudioPlay"
+              @pause="handleAudioPause"
+              @timeupdate="handleAudioTimeUpdate"
             ></audio>
-            <p v-else class="muted">No source file path is linked yet.</p>
-            <div class="audio-upload-row">
+            <p v-else class="muted">{{ t("Audio is not available for this track.") }}</p>
+            <a
+              v-if="isPublicMode && selectedTrack.audioUrl"
+              class="audio-download"
+              :href="`${selectedTrack.audioUrl}?download=1`"
+              download
+              >{{ t("Download audio") }}</a
+            >
+            <div class="tempo-preview-row">
+              <div class="tempo-preview-controls">
+                <label class="tempo-preview-toggle">
+                  <input
+                    v-model="isTempoPreviewEnabled"
+                    type="checkbox"
+                    :disabled="!selectedTrack.audioUrl"
+                  />
+                  <span>{{ t("Tempo preview") }}</span>
+                </label>
+                <label class="tempo-preview-bpm-field">
+                  <span>{{ t("Playback BPM") }}</span>
+                  <input
+                    v-model="tempoPreviewTargetBpmDraft"
+                    type="number"
+                    min="1"
+                    step="0.01"
+                    placeholder="80"
+                    :disabled="!selectedTrack.audioUrl"
+                  />
+                </label>
+              </div>
+              <small>{{ tempoPreviewStatus }}</small>
+            </div>
+            <div v-if="canEditCatalog" class="audio-upload-row">
               <input type="file" accept="audio/*" @change="setFocusAudioFile" />
               <button
                 type="button"
@@ -3013,7 +4293,7 @@ function assertNever(value: never): never {
                 Upload
               </button>
             </div>
-            <div class="retrieval-launch-row">
+            <div v-if="canEditCatalog" class="retrieval-launch-row">
               <label>
                 <span>Retrieval input</span>
                 <input
@@ -3033,7 +4313,7 @@ function assertNever(value: never): never {
             </div>
             <small v-if="audioUploadDir" class="audio-folder-path">{{ audioUploadDir }}</small>
           </section>
-          <section class="track-edit-panel" aria-label="Track editor">
+          <section v-if="canEditCatalog" class="track-edit-panel" aria-label="Track editor">
             <div class="editor-grid">
               <label>
                 <span>BPM</span>
@@ -3188,9 +4468,9 @@ function assertNever(value: never): never {
           </section>
           <dl>
             <div>
-              <dt>Key</dt>
+              <dt>{{ t("Key") }}</dt>
               <dd class="value-with-badges">
-                {{ selectedTrack.keyLabel }}
+                {{ displayKey(selectedTrack) }}
                 <span
                   v-if="selectedTrack.confidence.key !== 'confirmed'"
                   class="inline-confidence"
@@ -3201,10 +4481,9 @@ function assertNever(value: never): never {
                 <span
                   v-if="selectedTrack.nonStandardTuning"
                   class="inline-confidence non-standard-tuning"
-                  title="Not aligned to standard A=440 Hz tuning"
+                  :title="t('Not aligned to standard A=440 Hz tuning')"
+                  >{{ t("non-440") }}</span
                 >
-                  non-440
-                </span>
               </dd>
             </div>
             <div>
@@ -3221,34 +4500,45 @@ function assertNever(value: never): never {
               </dd>
             </div>
             <div>
-              <dt>Placement</dt>
-              <dd>{{ selectedTrack.placement?.summary ?? "Not placed on circle yet" }}</dd>
+              <dt>{{ t("Quality") }}</dt>
+              <dd
+                class="value-with-badges"
+                :title="selectedTrack.audioQuality?.probeError ?? undefined"
+              >
+                {{ formatTrackAudioQualitySummary(selectedTrack) }}
+              </dd>
             </div>
             <div>
-              <dt>Used chords</dt>
+              <dt>{{ t("Placement") }}</dt>
+              <dd>{{ displayPlacement(selectedTrack) }}</dd>
+            </div>
+            <div>
+              <dt>{{ t("Used chords") }}</dt>
               <dd>
-                <span v-if="isHarmonyLoading" class="muted">Loading chords...</span>
-                <span v-else-if="harmonyErrorMessage" class="muted">{{ harmonyErrorMessage }}</span>
+                <span v-if="isHarmonyLoading" class="muted">{{ t("Loading chords...") }}</span>
+                <span v-else-if="harmonyErrorMessage" class="muted">{{
+                  message(harmonyErrorMessage)
+                }}</span>
                 <span v-else class="chord-chip-list">
                   <span v-for="chord in usedChordList" :key="chord">{{ chord }}</span>
                 </span>
               </dd>
             </div>
             <div v-if="visibleChordSegments.length > 0" class="full-chord-table-block">
-              <dt>Full chord table</dt>
+              <dt>{{ t("Full chord table") }}</dt>
               <dd>
                 <details>
-                  <summary>{{ visibleChordSegments.length }} chord segments</summary>
+                  <summary>{{ segmentCount(visibleChordSegments.length) }}</summary>
                   <div class="segment-table-wrap">
                     <table>
                       <thead>
                         <tr>
                           <th>#</th>
-                          <th>Start</th>
-                          <th>End</th>
-                          <th>Chord</th>
-                          <th>Bass</th>
-                          <th>Basic</th>
+                          <th>{{ t("Start") }}</th>
+                          <th>{{ t("End") }}</th>
+                          <th>{{ t("Chord") }}</th>
+                          <th>{{ t("Bass") }}</th>
+                          <th>{{ t("Basic") }}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -3267,11 +4557,11 @@ function assertNever(value: never): never {
               </dd>
             </div>
             <div v-if="selectedTrack.harmonyNotes" class="harmony-note-block">
-              <dt>Harmony note</dt>
+              <dt>{{ t("Harmony note") }}</dt>
               <dd>{{ selectedTrack.harmonyNotes }}</dd>
             </div>
             <div v-if="selectedTrack.comment">
-              <dt>Comment</dt>
+              <dt>{{ t("Comment") }}</dt>
               <dd>{{ selectedTrack.comment }}</dd>
             </div>
           </dl>
@@ -3279,11 +4569,11 @@ function assertNever(value: never): never {
             <span v-for="tag in selectedTrack.tags" :key="tag">{{ tag }}</span>
           </div>
         </template>
-        <p v-else class="muted">Select a dot or row.</p>
+        <p v-else class="muted">{{ t("Select a dot or row.") }}</p>
       </aside>
     </section>
     <div
-      v-if="isNewTrackDialogOpen"
+      v-if="canEditCatalog && isNewTrackDialogOpen"
       class="modal-backdrop"
       role="dialog"
       aria-modal="true"
@@ -3388,7 +4678,7 @@ function assertNever(value: never): never {
       </form>
     </div>
     <div
-      v-if="isRetrievalDialogOpen"
+      v-if="canEditCatalog && isRetrievalDialogOpen"
       class="modal-backdrop"
       role="dialog"
       aria-modal="true"
@@ -3568,7 +4858,7 @@ function assertNever(value: never): never {
         </section>
       </section>
     </div>
-    <nav class="mobile-tab-bar" aria-label="Mobile workspace sections">
+    <nav class="mobile-tab-bar" :aria-label="t('Mobile workspace sections')">
       <button
         v-for="tab in mobileTabs"
         :key="tab.id"

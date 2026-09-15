@@ -80,11 +80,29 @@ export interface TrackAnalysisConfidence {
   key: VerificationState;
 }
 
+export type TrackAudioQualityStatus = "hq" | "lossy" | "unknown";
+
+export type TrackBitrateMode = "cbr" | "unknown" | "vbr";
+
+export interface TrackAudioQuality {
+  analyzedAt: string | null;
+  bitDepth: number | null;
+  bitrateKbps: number | null;
+  bitrateMode: TrackBitrateMode;
+  codec: string | null;
+  container: string | null;
+  isHighBitrateLossy: boolean;
+  probeError: string | null;
+  sampleRateHz: number | null;
+  status: TrackAudioQualityStatus;
+}
+
 export interface Track {
   id: string;
   title: string;
   artist?: string;
   audioPath?: string;
+  audioQuality?: TrackAudioQuality;
   bpm: number | null;
   key: TrackKey | null;
   chordProgression: readonly string[];

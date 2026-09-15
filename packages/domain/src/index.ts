@@ -6,6 +6,8 @@ export {
   CIRCLE_OF_FIFTHS,
   createEmptyCircleBuckets,
   describeKey,
+  describePlacement,
+  type DisplayLocale,
   getCircleIndex,
   getKeyTonicLabel,
   getModeLabel,
@@ -27,9 +29,18 @@ export type {
   PitchClassLabel,
   Track,
   TrackAnalysisConfidence,
+  TrackAudioQuality,
+  TrackAudioQualityStatus,
+  TrackBitrateMode,
   TrackKey,
   TransitionDirection,
   TransitionProfile,
   VerificationState,
 } from "./types.ts";
 export { PITCH_CLASSES } from "./types.ts";
+export {
+  formatKeyNotation,
+  formatCircleNotation,
+  KEY_NOTATIONS,
+  type KeyNotation,
+} from "./notation.ts";

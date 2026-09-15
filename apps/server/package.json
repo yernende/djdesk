@@ -6,14 +6,17 @@
   "scripts": {
     "build": "npm run typecheck",
     "db:migrate": "node src/db/migrate.ts",
+    "public": "node src/public/cli.ts",
     "dev": "npm run build --workspace @djdesk/domain && node --watch src/index.ts",
     "audio:link": "npm run build --workspace @djdesk/domain && node src/audio/link-cli.ts",
+    "audio:quality": "npm run build --workspace @djdesk/domain && node src/audio/quality-cli.ts",
     "import:chordai:backfill-keys": "npm run build --workspace @djdesk/domain && node src/importers/chordai/backfill-keys-cli.ts",
     "import:chordai": "npm run build --workspace @djdesk/domain && node src/importers/chordai/cli.ts",
     "import:chordai:chords-only": "npm run build --workspace @djdesk/domain && node src/importers/chordai/chords-only-cli.ts",
     "import:rekordbox": "npm run build --workspace @djdesk/domain && node src/importers/rekordbox/cli.ts",
+    "import:windows-flash": "npm run build --workspace @djdesk/domain && node src/importers/windows-flash/cli.ts",
     "start": "node src/index.ts",
-    "test": "node --test src/audio/*.test.ts src/db/*.test.ts src/importers/chordai/*.test.ts src/importers/rekordbox/*.test.ts src/routes.test.ts",
+    "test": "node --test src/audio/*.test.ts src/db/*.test.ts src/importers/chordai/*.test.ts src/importers/rekordbox/*.test.ts src/importers/windows-flash/*.test.ts src/public/*.test.ts src/routes.test.ts",
     "typecheck": "npm run build --workspace @djdesk/domain && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

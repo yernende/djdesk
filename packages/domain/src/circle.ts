@@ -131,7 +131,35 @@ export function getCircleIndex(tonic: PitchClass): number {
   return CIRCLE_OF_FIFTHS.indexOf(tonic);
 }
 
-export function getModeLabel(mode: DiatonicMode): string {
+export type DisplayLocale = "en" | "ru";
+
+export function localizeSolfege(label: string, locale: DisplayLocale): string {
+  const names: Record<string, string> = {
+    Do: "До",
+    Re: "Ре",
+    Mi: "Ми",
+    Fa: "Фа",
+    Sol: "Соль",
+    La: "Ля",
+    Si: "Си",
+  };
+  return locale === "ru"
+    ? label.replace(/\b(Do|Re|Mi|Fa|Sol|La|Si)\b/g, (name) => names[name]!)
+    : label;
+}
+
+export function getModeLabel(mode: DiatonicMode, locale: DisplayLocale = "en"): string {
+  if (locale === "ru") {
+    const names: Record<DiatonicMode, string> = {
+      major: "мажор",
+      "natural-minor": "натуральный минор",
+      dorian: "дорийский",
+      phrygian: "фригийский",
+      lydian: "лидийский",
+      mixolydian: "миксолидийский",
+    };
+    return names[mode];
+  }
   switch (mode) {
     case "major":
       return "Major";
@@ -157,24 +185,32 @@ export function getPitchClassLabel(pitch: PitchClass): string {
   return enharmonic ? `${label.label} / ${enharmonic}` : label.label;
 }
 
-export function getKeyTonicLabel(key: TrackKey): string {
+export function getKeyTonicLabel(key: TrackKey, locale: DisplayLocale = "en"): string {
   const spelling = getCanonicalKeySpelling(key);
   const enharmonic = getAlternatePitchSpelling(key.tonic, spelling);
 
-  return enharmonic ? `${spelling.label} / ${enharmonic}` : spelling.label;
+  return localizeSolfege(enharmonic ? `${spelling.label} / ${enharmonic}` : spelling.label, locale);
 }
 
-export function describeKey(key: TrackKey | null): string {
+export function describeKey(key: TrackKey | null, locale: DisplayLocale = "en"): string {
   if (!key) {
-    return "Unknown key";
+    return locale === "ru" ? "Тональность неизвестна" : "Unknown key";
   }
 
-  const variant = key.variant === "diatonic" ? "" : `, ${getVariantLabel(key.variant)}`;
+  const variant = key.variant === "diatonic" ? "" : `, ${getVariantLabel(key.variant, locale)}`;
 
-  return `${getKeyTonicLabel(key)} ${getModeLabel(key.mode)}${variant}`;
+  return `${getKeyTonicLabel(key, locale)} ${getModeLabel(key.mode, locale)}${variant}`;
 }
 
-export function getVariantLabel(variant: ModalVariant): string {
+export function getVariantLabel(variant: ModalVariant, locale: DisplayLocale = "en"): string {
+  if (locale === "ru") {
+    const names: Record<ModalVariant, string> = {
+      diatonic: "диатонический",
+      "raised-leading-tone": "повышенная вводная ступень",
+      "variable-degree": "переменная ступень",
+    };
+    return names[variant];
+  }
   switch (variant) {
     case "diatonic":
       return "Diatonic";
@@ -221,6 +257,17 @@ export function getModalPlacement(key: TrackKey): ModalPlacement {
     lane: "modal-mixture",
     summary: `${getModeLabel(key.mode)} with modal mixture`,
   };
+}
+
+export function describePlacement(key: TrackKey, locale: DisplayLocale = "en"): string {
+  const placement = getModalPlacement(key);
+  if (locale === "en") return placement.summary;
+  if (placement.lane === "home")
+    return key.variant === "raised-leading-tone"
+      ? "Основная тональность с повышенной вводной ступенью"
+      : "Основная тональность";
+  const mode = getModeLabel(key.mode, locale);
+  return placement.lane === "pure-modal" ? `Модальный сектор: ${mode}` : `Смешение ладов: ${mode}`;
 }
 
 export function getTransitionProfile(key: TrackKey | null): TransitionProfile | null {

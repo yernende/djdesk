@@ -2,6 +2,7 @@ import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import Fastify, { type FastifyInstance } from "fastify";
 
+import { analyzeAudioQuality } from "./audio/quality.ts";
 import type { ServerConfig } from "./config.ts";
 import { openDatabase } from "./db/database.ts";
 import { runMigrations } from "./db/migrations.ts";
@@ -10,6 +11,7 @@ import { createDjToolRetriever } from "./retrieval/dj-tool.ts";
 import { createRetrievalManager } from "./retrieval/jobs.ts";
 import type { TrackRetriever } from "./retrieval/types.ts";
 import { registerRoutes } from "./routes.ts";
+import { registerPublicRoutes } from "./public/routes.ts";
 
 export interface ServerDependencies {
   retriever?: TrackRetriever;
@@ -20,8 +22,11 @@ export async function createServer(
   dependencies: ServerDependencies = {},
 ): Promise<FastifyInstance> {
   const app = Fastify({
+    bodyLimit: config.public ? 96 * 1024 : 1024 * 1024,
+    trustProxy: config.public ? ["127.0.0.1", "::1"] : false,
     logger: {
       level: process.env.LOG_LEVEL ?? "info",
+      redact: ["req.headers.cookie", "req.headers.authorization", "res.headers['set-cookie']"],
     },
   });
   const database = await openDatabase(config.databasePath);
@@ -39,6 +44,13 @@ export async function createServer(
     database.close();
   });
 
+  const trackRepository = createSqliteTrackRepository(database);
+  if (config.public) {
+    await registerPublicRoutes(app, database, trackRepository, config.public);
+    return app;
+  }
+  app.get("/api/config", async () => ({ mode: "local" }));
+
   await app.register(cors, {
     origin: true,
   });
@@ -50,7 +62,6 @@ export async function createServer(
     },
   });
 
-  const trackRepository = createSqliteTrackRepository(database);
   const retriever =
     dependencies.retriever ??
     createDjToolRetriever({
@@ -61,6 +72,7 @@ export async function createServer(
   await registerRoutes(app, trackRepository, {
     audioUploadDir: config.audioUploadDir,
     retrievalManager: createRetrievalManager({
+      analyzeAudioQuality,
       retriever,
       tracks: trackRepository,
     }),
