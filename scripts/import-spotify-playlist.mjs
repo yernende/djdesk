@@ -39,8 +39,8 @@ const ytDlpStopWords = new Set([
   "youtube",
 ]);
 
-const args = parseArgs(process.argv.slice(2));
 const serverConfig = readServerConfig();
+const args = parseArgs(process.argv.slice(2));
 const playlistId = parseSpotifyPlaylistId(args.playlist);
 const runRoot = join(
   serverConfig.windowsFlashStagingDir,
@@ -385,7 +385,12 @@ async function trySpotify(dj, item) {
 async function tryYtDlp(item) {
   const ytDlpPath = args.ytDlpPath;
 
-  if (!existsSync(ytDlpPath)) {
+  const executable = await runCommand(ytDlpPath, ["--version"], {
+    check: false,
+    timeoutMs: 10_000,
+  }).catch(() => null);
+
+  if (!executable || executable.code !== 0) {
     return {
       audioPath: null,
       note: `yt-dlp fallback unavailable at ${ytDlpPath}`,
@@ -988,7 +993,7 @@ function parseArgs(argv) {
     skipAnalysis: false,
     skipSpotify: false,
     ytDlpFallback: false,
-    ytDlpPath: "/home/example/Library/Python/3.9/bin/yt-dlp",
+    ytDlpPath: process.env.YTDLP_PATH || "yt-dlp",
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -1024,7 +1029,11 @@ function parseArgs(argv) {
     }
 
     if (arg === "--yt-dlp-path") {
-      parsed.ytDlpPath = argv[++index];
+      const value = argv[++index];
+      if (!value || value.startsWith("--")) {
+        throw new Error(`${arg} expects an executable path or command`);
+      }
+      parsed.ytDlpPath = value;
       continue;
     }
 
@@ -1042,7 +1051,7 @@ function parseArgs(argv) {
 
   if (!parsed.playlist) {
     throw new Error(
-      "Usage: node scripts/import-spotify-playlist.mjs <spotify-playlist-url> [--dry-run] [--skip-analysis] [--skip-spotify] [--yt-dlp-fallback] [--max-tracks N]",
+      "Usage: node scripts/import-spotify-playlist.mjs <spotify-playlist-url> [--dry-run] [--skip-analysis] [--skip-spotify] [--yt-dlp-fallback] [--yt-dlp-path executable] [--max-tracks N]",
     );
   }
 

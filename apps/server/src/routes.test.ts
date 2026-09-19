@@ -14,13 +14,13 @@ test("production editing routes persist sets, track edits, and uploaded audio", 
   const audioUploadDir = join(rootPath, "audio");
   const app = await createServer({
     audioUploadDir,
-    chordAiKitRoot: "/home/example/Documents/ChordAI Pipeline Kit",
+    chordAiKitRoot: join(rootPath, "chordai-pipeline-kit"),
     databasePath,
-    djToolRoot: "/tmp/dj-tool",
+    djToolRoot: join(rootPath, "dj-tool"),
     host: "127.0.0.1",
     port: 0,
     seedSampleData: false,
-    windowsFlashStagingDir: "/home/example/Documents/djdesk/windows-flash-import",
+    windowsFlashStagingDir: join(rootPath, "windows-flash-import"),
     windowsHost: "windows",
   });
 
@@ -184,13 +184,13 @@ test("retrieval routes select candidates, link audio, retry, cancel, and expose 
   const app = await createServer(
     {
       audioUploadDir,
-      chordAiKitRoot: "/home/example/Documents/ChordAI Pipeline Kit",
+      chordAiKitRoot: join(rootPath, "chordai-pipeline-kit"),
       databasePath,
-      djToolRoot: "/tmp/dj-tool",
+      djToolRoot: join(rootPath, "dj-tool"),
       host: "127.0.0.1",
       port: 0,
       seedSampleData: false,
-      windowsFlashStagingDir: "/home/example/Documents/djdesk/windows-flash-import",
+      windowsFlashStagingDir: join(rootPath, "windows-flash-import"),
       windowsHost: "windows",
     },
     {

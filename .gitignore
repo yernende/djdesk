@@ -13,4 +13,6 @@ data/*.sqlite-*
 data/*.sqlite.*
 data/*.bak
 data/*access-link*
+data/audio/
+data/windows-flash-import/
 artifacts/

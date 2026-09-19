@@ -2,6 +2,7 @@
   "name": "@djdesk/client",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "build": "npm run build --workspace @djdesk/domain && vue-tsc -p tsconfig.app.json --noEmit && vite build",

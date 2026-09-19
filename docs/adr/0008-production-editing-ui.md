@@ -60,7 +60,7 @@ Support optional audio upload for manual operation:
 
 - `@fastify/multipart` handles uploads.
 - `AUDIO_UPLOAD_DIR` configures the target folder.
-- the temporary default is `/home/example/Documents/Music/2.05.2025`.
+- the default is `data/audio`, relative to the repository root.
 - uploaded audio is stored by path and streamed through the existing audio
   endpoint.
 - Unicode filenames are preserved on disk and served through the existing

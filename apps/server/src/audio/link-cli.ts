@@ -9,10 +9,9 @@ const args = parseCliArgs();
 
 if (args.roots.length === 0) {
   console.error(
-    [
-      "Usage:",
-      '  npm run audio:link -- --root "$HOME/Documents/Music/2.05.2025" --root "$HOME/Documents/Music/sources"',
-    ].join("\n"),
+    ["Usage:", '  npm run audio:link -- --root "/path/to/music" --root "/path/to/more-music"'].join(
+      "\n",
+    ),
   );
   process.exitCode = 1;
 } else {

@@ -11,8 +11,8 @@ import { openDatabase } from "../apps/server/src/db/database.ts";
 import { runMigrations } from "../apps/server/src/db/migrations.ts";
 import { analyzeAudioQuality } from "../apps/server/src/audio/quality.ts";
 
-const args = parseArgs(process.argv.slice(2));
 const serverConfig = readServerConfig();
+const args = parseArgs(process.argv.slice(2));
 const runId = new Date().toISOString().replace(/[:.]/g, "-");
 const runRoot = join(serverConfig.windowsFlashStagingDir, `track-list-${runId}`);
 const downloadDir = resolve(serverConfig.audioUploadDir, `Track List ${runId}`);
@@ -565,7 +565,11 @@ async function trySpotifyHq(dj, item) {
 }
 
 async function tryYtDlp(query) {
-  if (!existsSync(args.ytDlpPath)) {
+  const executable = await runProcess(args.ytDlpPath, ["--version"], {
+    timeoutMs: 10_000,
+  }).catch(() => null);
+
+  if (!executable || executable.code !== 0) {
     return {
       audioPath: null,
       item: null,
@@ -1102,7 +1106,7 @@ function parseArgs(argv) {
     queries: [],
     skipSpotify: false,
     ytDlpFallback: false,
-    ytDlpPath: "/home/example/Library/Python/3.9/bin/yt-dlp",
+    ytDlpPath: process.env.YTDLP_PATH || "yt-dlp",
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -1133,7 +1137,11 @@ function parseArgs(argv) {
     }
 
     if (arg === "--yt-dlp-path") {
-      parsed.ytDlpPath = argv[++index];
+      const value = argv[++index];
+      if (!value || value.startsWith("--")) {
+        throw new Error(`${arg} expects an executable path or command`);
+      }
+      parsed.ytDlpPath = value;
       continue;
     }
 

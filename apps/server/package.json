@@ -2,6 +2,7 @@
   "name": "@djdesk/server",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "build": "npm run typecheck",
@@ -16,7 +17,7 @@
     "import:rekordbox": "npm run build --workspace @djdesk/domain && node src/importers/rekordbox/cli.ts",
     "import:windows-flash": "npm run build --workspace @djdesk/domain && node src/importers/windows-flash/cli.ts",
     "start": "node src/index.ts",
-    "test": "node --test src/audio/*.test.ts src/db/*.test.ts src/importers/chordai/*.test.ts src/importers/rekordbox/*.test.ts src/importers/windows-flash/*.test.ts src/public/*.test.ts src/routes.test.ts",
+    "test": "node --test src/audio/*.test.ts src/db/*.test.ts src/importers/chordai/*.test.ts src/importers/rekordbox/*.test.ts src/importers/windows-flash/*.test.ts src/public/*.test.ts src/config.test.ts src/routes.test.ts",
     "typecheck": "npm run build --workspace @djdesk/domain && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

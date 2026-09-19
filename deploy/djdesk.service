@@ -1,0 +1,29 @@
+[Unit]
+Description=DJ Desk public API
+After=network.target
+
+[Service]
+Type=simple
+User=djdesk
+Group=djdesk
+WorkingDirectory=/srv/djdesk/current/apps/server
+EnvironmentFile=/etc/djdesk.env
+ExecStart=/usr/local/bin/node src/index.ts
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/djdesk/data
+ReadOnlyPaths=/var/lib/djdesk/audio
+MemoryHigh=256M
+MemoryMax=384M
+CPUQuota=60%
+TasksMax=64
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
+
+[Install]
+WantedBy=multi-user.target

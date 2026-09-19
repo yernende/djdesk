@@ -14,6 +14,26 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  secrets:
+    name: Scan complete Git history
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned Gitleaks
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --location \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            --output "$RUNNER_TEMP/gitleaks.tar.gz"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+      - name: Scan all fetched history
+        run: '"$RUNNER_TEMP/gitleaks" git . --log-opts="--all --full-history" --redact=100 --ignore-gitleaks-allow --no-banner'
+
   checks:
     name: Check and build
     runs-on: ubuntu-24.04
@@ -27,7 +47,10 @@ jobs:
           node-version-file: .node-version
           cache: npm
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: ffprobe -version
       - run: npm ci
+      - name: Check deployment configuration
+        run: python3 -m unittest discover -s deploy -p 'test_*.py' -v
       - name: Check, build and package
         run: python3 deploy/release.py --output artifacts/release
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -40,13 +63,13 @@ jobs:
 
   deploy:
     name: Deploy production
-    needs: checks
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [secrets, checks]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
       name: production
-      url: https://djdesk.zouk-in-tomsk.ru
+      url: ${{ vars.DEPLOY_PUBLIC_ORIGIN }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -69,6 +92,8 @@ jobs:
       - name: Deploy checked artifact and verify public HTTPS
         if: steps.head.outputs.current == 'true'
         env:
+          DEPLOY_SSH_TARGET: ${{ secrets.DEPLOY_SSH_TARGET }}
+          DEPLOY_PUBLIC_ORIGIN: ${{ vars.DEPLOY_PUBLIC_ORIGIN }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: python3 deploy/from-actions.py
