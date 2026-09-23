@@ -4,6 +4,11 @@
 
 Accepted.
 
+The section/subsection browsing restrictions, unknown-key shelf filtering, and
+primary BPM-compatibility ranking below are superseded by
+[ADR 0010](0010-global-search-and-explicit-set-navigation.md). The original
+decisions remain here as historical context.
+
 ## Date
 
 2026-04-20

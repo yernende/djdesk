@@ -4,6 +4,10 @@
 
 Accepted.
 
+The nearby-section filtering described below is superseded by whole-sector
+priority in [ADR 0010](0010-global-search-and-explicit-set-navigation.md).
+The original decision remains here as historical context.
+
 ## Date
 
 2026-04-20

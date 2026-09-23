@@ -6,16 +6,13 @@ import {
   canKeysTransition,
   CIRCLE_OF_FIFTHS,
   getTransitionProfile,
-  describeKey,
   formatKeyNotation,
   formatCircleNotation,
   describePlacement,
   KEY_NOTATIONS,
   type KeyNotation,
-  getModalPlacement,
   PITCH_CLASSES,
   PITCH_CLASS_LABELS,
-  sampleTracks,
   type DiatonicMode,
   type ModalVariant,
   type PitchClass,
@@ -55,8 +52,23 @@ import {
   type TrackView,
 } from "./api.ts";
 import { SetSaveQueue } from "./set-saving.ts";
+import { mergeLoadedSets } from "./set-loading.ts";
 import { resolveSetRows } from "./set-rows.ts";
-import { DEFAULT_TARGET_BPM, compareBpmDescending, findClosestBpmTrack } from "./bpm-sorting.ts";
+import { DEFAULT_TARGET_BPM } from "./bpm-sorting.ts";
+import {
+  getPriorityBpmTarget,
+  matchesBrowserPriority,
+  normalizeSearchText,
+  rankBrowserTracks,
+  type BrowserPriority,
+} from "./browser-search.ts";
+import {
+  readNavigation,
+  updateNavigationUrl,
+  trackHref,
+  trackShareUrl,
+  type NavigationState,
+} from "./navigation.ts";
 import {
   formatDraftCompatibilityReason,
   getDraftCandidateCompatibility,
@@ -80,12 +92,9 @@ type PitchPreservingAudioElement = HTMLAudioElement & {
 type CircleSelection =
   | { kind: "unknown" }
   | { kind: "section"; section: number }
-  | { kind: "slice"; section: number; slice: SectionSlice }
   | { kind: "boundary"; boundaryIndex: number };
 
-interface DraftSet extends SetDraftView {
-  isDemo?: boolean;
-}
+type DraftSet = SetDraftView;
 
 interface CenterReadout {
   subtitle: string;
@@ -117,8 +126,6 @@ interface TrackFilters {
   setPresence: SetPresenceFilter;
 }
 
-const DEFAULT_DRAFT_LENGTH = 6;
-const DEFAULT_DRAFT_START_SECTION = 0;
 const ZONE_INNER_RADIUS = 104;
 const ZONE_OUTER_RADIUS = 232;
 const MAIN_ZONE_HALF_WIDTH = 0.23;
@@ -127,7 +134,6 @@ const PURE_ZONE_END = 0.42;
 const BOUNDARY_ZONE_HALF_WIDTH = 0.07;
 const BPM_SCORE_HALF_LIFE = 0.06;
 const TARGET_BPM_SCROLL_DURATION_MS = 180;
-const ENABLE_DEMO_DATA = import.meta.env.VITE_ENABLE_DEMO_DATA === "true";
 const canEditCatalog = ref(false);
 const isPublicMode = ref(false);
 const isWorkspaceReady = ref(false);
@@ -225,6 +231,17 @@ const openedLucidaUrl = ref("");
 const trackSearchQuery = ref("");
 const areTrackFiltersOpen = ref(false);
 const trackFilters = ref<TrackFilters>(getDefaultTrackFilters());
+const compatibleOnly = ref(false);
+const compatibilityNotice = ref("");
+const isSetPickerOpen = ref(false);
+const isSetCreatorOpen = ref(false);
+const hasLoadedSets = ref(false);
+const isLoadingSets = ref(false);
+const unavailableTrackId = ref<string | null>(null);
+const trackLinkMessage = ref("");
+const trackLinkFallback = ref("");
+let navigationRevision = 0;
+let harmonyRevision = 0;
 const hasPendingTargetBpmJump = ref(false);
 let retrievalPollTimer: number | null = null;
 let targetBpmScrollAnimationFrame: number | null = null;
@@ -267,7 +284,7 @@ const hasActiveCircleSelection = computed(() => circleSelection.value !== null);
 
 const isBrowserFiltered = computed(
   () =>
-    hasActiveCircleSelection.value ||
+    compatibleOnly.value ||
     normalizedTrackSearchQuery.value.length > 0 ||
     activeTrackFiltersCount.value > 0,
 );
@@ -276,15 +293,32 @@ const unknownKeyTracks = computed(() =>
   tracks.value.filter((track) => !track.key).sort(compareNullableBpmThenTitle),
 );
 
-const browserTracks = computed(() => {
-  const query = normalizedTrackSearchQuery.value;
-  const filteredTracks = tracks.value
-    .filter((track) => matchesCircleSelection(track, circleSelection.value))
-    .filter((track) => trackMatchesFilters(track, trackFilters.value))
-    .filter((track) => !query || getTrackSearchScore(track, query) > 0);
-
-  return sortBrowserTracks(filteredTracks);
+const browserPriority = computed<BrowserPriority>(() => {
+  const selection = circleSelection.value;
+  if (!selection || selection.kind === "unknown") return selection;
+  return {
+    kind: "sections",
+    sections:
+      selection.kind === "section"
+        ? [selection.section]
+        : [Math.floor(selection.boundaryIndex), Math.ceil(selection.boundaryIndex) % 12],
+  };
 });
+const browserTracks = computed(() =>
+  rankBrowserTracks(
+    tracks.value
+      .filter((track) => trackMatchesFilters(track, trackFilters.value))
+      .filter((track) => !compatibleOnly.value || !getTrackDraftCompatibility(track).isRisky),
+    {
+      query: normalizedTrackSearchQuery.value,
+      priority: browserPriority.value,
+      keyLabel: displayKey,
+    },
+  ),
+);
+const hasPreferredMatches = computed(() =>
+  browserTracks.value.some((track) => matchesBrowserPriority(track, browserPriority.value)),
+);
 
 const selectedLabel = computed(() => getSelectedPositionLabel());
 
@@ -292,7 +326,9 @@ const centerReadout = computed(() => getCenterReadout());
 
 const browserTitle = computed(() => trackCount(browserTracks.value.length));
 
-const browserEyebrow = computed(() => selectedLabel.value);
+const browserEyebrow = computed(() =>
+  compatibleOnly.value ? t("Only compatible") : t("All tracks"),
+);
 
 const adjustableBpmDraft = computed(() => {
   try {
@@ -313,10 +349,7 @@ const mixtureCount = computed(
 );
 
 const activeDraftSet = computed(
-  () =>
-    draftSets.value.find((draftSet) => draftSet.id === activeDraftSetId.value) ??
-    draftSets.value[0] ??
-    null,
+  () => draftSets.value.find((draftSet) => draftSet.id === activeDraftSetId.value) ?? null,
 );
 
 const activeDraftTrackIds = computed(() => activeDraftSet.value?.trackIds ?? []);
@@ -327,6 +360,23 @@ const draftTracks = computed(() =>
 
 const draftTransitionContext = computed(() =>
   getDraftTransitionContext(draftTracks.value, selectedDraftIndex.value),
+);
+const hasCompatibilityReference = computed(() =>
+  Boolean(draftTransitionContext.value.previousTrack || draftTransitionContext.value.nextTrack),
+);
+const compatibilityContextLabel = computed(() => {
+  const { previousTrack, nextTrack } = draftTransitionContext.value;
+  if (previousTrack && nextTrack)
+    return t("Compatible between {previous} and {next}", {
+      previous: previousTrack.title,
+      next: nextTrack.title,
+    });
+  if (previousTrack) return t("Compatible after {track}", { track: previousTrack.title });
+  if (nextTrack) return t("Compatible before {track}", { track: nextTrack.title });
+  return t("Add a track to a set to compare harmony.");
+});
+const hasHiddenSaveFailures = computed(() =>
+  Object.keys(saveFailures.value).some((id) => id !== activeDraftSetId.value),
 );
 
 const isReplaceMode = computed(() => draftTransitionContext.value.mode === "replace");
@@ -559,7 +609,9 @@ const tempoPreviewStatus = computed(() => {
   }
 
   if (!isTempoPreviewActive.value) {
-    return t("{bpm} BPM is already near playback target", { bpm: formatEditableBpm(track.bpm) });
+    return t("{bpm} BPM is already near playback target", {
+      bpm: formatEditableBpm(track.bpm),
+    });
   }
 
   return `${formatEditableBpm(track.bpm)} -> ${formatEditableBpm(tempoPreviewTargetBpm.value)} BPM · ${tempoPreviewRate.value.toFixed(2)}x`;
@@ -585,18 +637,9 @@ onMounted(async () => {
       fetchTracks(),
       canEditCatalog.value ? fetchAudioLibrary() : Promise.resolve({ audioUploadDir: "" }),
     ]);
-    const loadedTracks =
-      ENABLE_DEMO_DATA && canEditCatalog.value
-        ? [...trackResponse.tracks, ...buildDemoTrackViews()]
-        : trackResponse.tracks;
-
     audioUploadDir.value = audioLibraryResponse.audioUploadDir;
-    tracks.value = loadedTracks;
-    selectedTrack.value = loadedTracks[0] ?? null;
-    if (ENABLE_DEMO_DATA && canEditCatalog.value)
-      draftSets.value.push(...buildMockDraftSets(loadedTracks));
-    activeDraftSetId.value = draftSets.value[0]?.id ?? "";
-    renameSetName.value = activeDraftSet.value?.name ?? "";
+    tracks.value = trackResponse.tracks;
+    await applyNavigation();
   } catch (error) {
     errorMessage.value = error;
   } finally {
@@ -604,12 +647,14 @@ onMounted(async () => {
   }
   window.addEventListener("beforeunload", warnUnsavedChanges);
   window.addEventListener("hashchange", handleWorkspaceLinkChange);
+  window.addEventListener("popstate", handleNavigationChange);
 });
 
 onUnmounted(() => {
   clearTimeout(setNameSaveTimer);
   window.removeEventListener("beforeunload", warnUnsavedChanges);
   window.removeEventListener("hashchange", handleWorkspaceLinkChange);
+  window.removeEventListener("popstate", handleNavigationChange);
   clearRetrievalPolling();
   cancelTargetBpmScroll();
   destroySetChainSortable();
@@ -658,50 +703,248 @@ function warnUnsavedChanges(event: BeforeUnloadEvent): void {
   event.preventDefault();
 }
 
-function handleWorkspaceLinkChange(): void {
-  if (isPublicMode.value && window.location.hash) void initializeWorkspace(true);
-}
-
-async function initializeWorkspace(preserveDrafts = false): Promise<void> {
-  try {
-    if (isPublicMode.value) {
-      const path = /^\/w\/([^/]+)\/?$/.exec(window.location.pathname);
-      const secret = new URLSearchParams(window.location.hash.slice(1)).get("key");
-      // Remove the bearer secret even when exchange fails; never retain it in history.
-      if (window.location.hash) window.history.replaceState(null, "", window.location.pathname);
-      const session =
-        path?.[1] && secret
-          ? await exchangeWorkspaceLink(path[1], secret)
-          : await fetchWorkspaceSession();
-      if (path?.[1] && session.workspaceId !== path[1])
-        throw new Error("Open the complete secret access link for this workspace.");
-      hasWorkspace.value = Boolean(session.workspaceId);
-      if (!hasWorkspace.value) {
-        isWorkspaceReady.value = true;
-        return;
-      }
-      window.history.replaceState(null, "", `/w/${session.workspaceId}`);
-      workspaceError.value = "";
-      // A same-page access link changes only the fragment. Exchange it without
-      // discarding edits or conflict recovery state already open in this tab.
-      if (preserveDrafts && isWorkspaceReady.value) return;
-    }
-    const result = await fetchSets();
-    draftSets.value = result.sets;
-    for (const set of result.sets) saveQueue.remember(set.id, set.revision);
-    isWorkspaceReady.value = true;
-  } catch (error) {
-    workspaceError.value = error;
+async function handleWorkspaceLinkChange(): Promise<void> {
+  const route = readNavigation(window.location.href);
+  if (!isPublicMode.value || !route.secret) return;
+  const revision = ++navigationRevision;
+  // Keep credentials only in this operation, including when a pending save blocks exchange.
+  window.history.replaceState(
+    null,
+    "",
+    updateNavigationUrl(window.location.href, {}, { stripSecret: true }),
+  );
+  await saveActiveSetName();
+  await saveQueue.flush();
+  if (
+    revision !== navigationRevision ||
+    isSetSaving.value ||
+    hasUnsavedSetName.value ||
+    Object.keys(saveFailures.value).length
+  )
+    return;
+  if (await initializeWorkspace(route, revision)) {
+    if (revision === navigationRevision) await applyNavigation();
   }
 }
 
-function showNewAccessLink(): void {
+let currentWorkspaceId: string | null = null;
+let workspaceGeneration = 0;
+let workspaceInitializationTail: Promise<unknown> = Promise.resolve();
+let savedSetsLoad: { generation: number; promise: Promise<void> } | null = null;
+const deletedSetIds = new Set<string>();
+
+function setCurrentWorkspace(workspaceId: string | null): void {
+  hasWorkspace.value = Boolean(workspaceId);
+  if (currentWorkspaceId === workspaceId) return;
+  currentWorkspaceId = workspaceId;
+  workspaceGeneration++;
+  deletedSetIds.clear();
+  savedSetsLoad = null;
+  isLoadingSets.value = false;
+  draftSets.value = [];
+  activeDraftSetId.value = "";
+  selectedDraftIndex.value = null;
+  hasLoadedSets.value = false;
+  saveFailures.value = {};
+  accessLink.value = "";
+  accessMessage.value = "";
+}
+
+async function initializeWorkspace(
+  route: NavigationState = readNavigation(window.location.href),
+  revision = navigationRevision,
+): Promise<boolean> {
+  // Exchange requests change the cookie and API session as well as the view. Serialize them.
+  const initialization = workspaceInitializationTail.then(async () => {
+    if (revision !== navigationRevision) return false;
+    isWorkspaceReady.value = false;
+    if (!isPublicMode.value) {
+      isWorkspaceReady.value = true;
+      return true;
+    }
+    const { workspaceId, secret } = route;
+    window.history.replaceState(
+      null,
+      "",
+      updateNavigationUrl(window.location.href, {}, { stripSecret: true }),
+    );
+    const session =
+      workspaceId && secret
+        ? await exchangeWorkspaceLink(workspaceId, secret)
+        : await fetchWorkspaceSession();
+    if (workspaceId && session.workspaceId !== workspaceId)
+      throw new Error("Open the complete secret access link for this workspace.");
+    setCurrentWorkspace(session.workspaceId);
+    isWorkspaceReady.value = true;
+    if (revision !== navigationRevision) return false;
+    workspaceError.value = "";
+    if (workspaceId && !route.setId) {
+      await loadSavedSets();
+      if (revision !== navigationRevision) return false;
+      isSetPickerOpen.value = true;
+    }
+    return true;
+  });
+  workspaceInitializationTail = initialization.catch(() => undefined);
+  try {
+    return await initialization;
+  } catch (error) {
+    if (revision === navigationRevision) workspaceError.value = error;
+    return false;
+  }
+}
+
+async function loadSavedSets(): Promise<void> {
+  if (hasLoadedSets.value || (isPublicMode.value && !hasWorkspace.value)) return;
+  const generation = workspaceGeneration;
+  if (savedSetsLoad?.generation === generation) return savedSetsLoad.promise;
+  isLoadingSets.value = true;
+  const promise = fetchSets()
+    .then((result) => {
+      if (generation !== workspaceGeneration) return;
+      const existingIds = new Set(draftSets.value.map((set) => set.id));
+      draftSets.value = mergeLoadedSets(draftSets.value, result.sets, deletedSetIds);
+      for (const set of draftSets.value) {
+        if (!existingIds.has(set.id)) {
+          saveQueue.remember(set.id, set.revision);
+        }
+      }
+      hasLoadedSets.value = true;
+    })
+    .catch((error: unknown) => {
+      if (generation === workspaceGeneration) throw error;
+    })
+    .finally(() => {
+      if (savedSetsLoad?.promise === promise) {
+        savedSetsLoad = null;
+        isLoadingSets.value = false;
+      }
+    });
+  savedSetsLoad = { generation, promise };
+  return promise;
+}
+
+function writeNavigation(
+  patch: { trackId?: string | null; setId?: string | null },
+  replace = false,
+  revision = ++navigationRevision,
+): void {
+  if (revision !== navigationRevision) return;
+  // A newer click can interrupt pending history restoration. Keep both selections in sync.
+  const url = updateNavigationUrl(window.location.href, {
+    trackId: selectedTrack.value?.id ?? unavailableTrackId.value,
+    setId: activeDraftSetId.value || null,
+    ...patch,
+  });
+  if (url === `${window.location.pathname}${window.location.search}${window.location.hash}`) return;
+  window.history[replace ? "replaceState" : "pushState"](null, "", url);
+}
+
+function beginSelectionIntent(): number {
+  const revision = ++navigationRevision;
+  writeNavigation({}, true, revision);
+  return revision;
+}
+
+function handleNavigationChange(): void {
+  void applyNavigation();
+}
+
+async function applyNavigation(): Promise<void> {
+  if (isPublicMode.value && readNavigation(window.location.href).secret) {
+    await handleWorkspaceLinkChange();
+    return;
+  }
+  const revision = ++navigationRevision;
+  const route = readNavigation(window.location.href);
+  await saveActiveSetName();
+  if (revision !== navigationRevision) return;
+  if (hasUnsavedSetName.value) {
+    writeNavigation(
+      {
+        setId: activeDraftSetId.value || null,
+        trackId: selectedTrack.value?.id ?? null,
+      },
+      true,
+      revision,
+    );
+    return;
+  }
+  let setLoadError: unknown;
+  if (route.setId) {
+    try {
+      await loadSavedSets();
+    } catch (error) {
+      setLoadError = error;
+    }
+    if (revision !== navigationRevision) return;
+  }
+  const set = route.setId
+    ? draftSets.value.find((candidate) => candidate.id === route.setId)
+    : null;
+  activeDraftSetId.value = set?.id ?? "";
+  selectedDraftIndex.value = null;
+  if (setLoadError) setErrorMessage.value = setLoadError;
+  else if (route.setId && !set) setErrorMessage.value = "Set unavailable";
+  else setErrorMessage.value = "";
+  const track = route.trackId
+    ? tracks.value.find((candidate) => candidate.id === route.trackId)
+    : null;
+  if (selectedTrack.value?.id !== track?.id) {
+    playbackIntent.value = false;
+    audioPlayer.value?.pause();
+    selectedTrack.value = track ?? null;
+  }
+  unavailableTrackId.value = route.trackId && !track ? route.trackId : null;
+  if (route.trackId) setActiveMobilePanel("focus");
+  else if (set) setActiveMobilePanel("set");
+}
+
+async function openSetPicker(): Promise<void> {
+  const revision = beginSelectionIntent();
+  setActiveMobilePanel("set");
+  isSetPickerOpen.value = !isSetPickerOpen.value;
+  if (!isSetPickerOpen.value) return;
+  try {
+    await loadSavedSets();
+  } catch (error) {
+    if (revision === navigationRevision) setErrorMessage.value = error;
+  }
+}
+
+async function closeDraftSet(): Promise<void> {
+  const revision = beginSelectionIntent();
+  await saveActiveSetName();
+  if (revision !== navigationRevision || hasUnsavedSetName.value) return;
+  activeDraftSetId.value = "";
+  selectedDraftIndex.value = null;
+  accessLink.value = "";
+  isSetPickerOpen.value = false;
+  writeNavigation({ setId: null }, false, revision);
+}
+
+async function copyTrackLink(): Promise<void> {
+  if (!selectedTrack.value) return;
+  const revision = navigationRevision;
+  const link = trackShareUrl(window.location.origin, selectedTrack.value.id);
+  try {
+    await navigator.clipboard.writeText(link);
+    if (revision !== navigationRevision) return;
+    trackLinkMessage.value = t("Track link copied.");
+    trackLinkFallback.value = "";
+  } catch {
+    if (revision !== navigationRevision) return;
+    trackLinkMessage.value = t("Copy this track link:");
+    trackLinkFallback.value = link;
+  }
+}
+
+function showNewAccessLink(activate = true): void {
   const result = takeNewWorkspaceSecret();
   if (!result) return;
-  hasWorkspace.value = true;
-  activeMobilePanel.value = "set";
+  setCurrentWorkspace(result.workspaceId);
+  if (activate) activeMobilePanel.value = "set";
   accessLink.value = `${window.location.origin}/w/${result.workspaceId}#key=${result.secret}`;
-  window.history.replaceState(null, "", `/w/${result.workspaceId}`);
   accessMessage.value =
     "Save this link now. Anyone with it can edit all your sets. Without the link or an active browser session, access cannot be recovered.";
 }
@@ -724,10 +967,11 @@ async function replaceAccessLink(): Promise<void> {
     )
   )
     return;
+  const revision = navigationRevision;
   isAccessBusy.value = true;
   try {
     await rotateWorkspaceLink();
-    showNewAccessLink();
+    showNewAccessLink(revision === navigationRevision);
   } catch (error) {
     accessMessage.value = error;
   } finally {
@@ -736,7 +980,6 @@ async function replaceAccessLink(): Promise<void> {
 }
 
 async function persistDraftSnapshot(set: DraftSet): Promise<void> {
-  if (set.isDemo) return;
   const snapshot = { ...set, trackIds: [...set.trackIds] };
   pendingSetWrites.value++;
   isSetSaving.value = true;
@@ -775,36 +1018,62 @@ async function reloadActiveSet(): Promise<void> {
     !window.confirm(t("Load the saved version? Unsaved changes to this set will be discarded."))
   )
     return;
+  const revision = beginSelectionIntent();
+  const generation = workspaceGeneration;
+  const requestedName = renameSetName.value;
   try {
     const saved = (await fetchSets()).sets.find((candidate) => candidate.id === set.id);
+    if (generation !== workspaceGeneration) return;
+    // The confirmation covers only the draft that existed when this read started.
+    if (
+      draftSets.value.find((candidate) => candidate.id === set.id) !== set ||
+      (activeDraftSetId.value === set.id && renameSetName.value !== requestedName)
+    )
+      return;
     if (!saved) {
-      setErrorMessage.value =
-        "This set was deleted on another device. Save your version as a copy.";
+      if (revision === navigationRevision)
+        setErrorMessage.value =
+          "This set was deleted on another device. Save your version as a copy.";
       return;
     }
     saveQueue.remember(set.id, saved.revision);
     saveQueue.unblock(set.id);
     delete saveFailures.value[set.id];
     replaceDraftSet(saved);
-    renameSetName.value = saved.name;
+    if (revision === navigationRevision && activeDraftSetId.value === set.id)
+      renameSetName.value = saved.name;
   } catch (error) {
-    setErrorMessage.value = error;
+    if (revision === navigationRevision) setErrorMessage.value = error;
   }
 }
 
 async function copyUnsavedSet(): Promise<void> {
   const set = activeDraftSet.value;
   if (!set || isSetSaving.value) return;
+  const revision = beginSelectionIntent();
+  const generation = workspaceGeneration;
   isSetSaving.value = true;
   try {
     const copy = await createSet(
       t("{name} (copy)", { name: set.name.slice(0, 110) }),
       set.trackIds,
     );
+    if (generation !== workspaceGeneration) return;
     draftSets.value.push(copy);
     saveQueue.remember(copy.id, copy.revision);
-    activeDraftSetId.value = copy.id;
+    if (revision === navigationRevision) {
+      activeDraftSetId.value = copy.id;
+      selectedDraftIndex.value = null;
+      writeNavigation({ setId: copy.id }, false, revision);
+    }
     const saved = (await fetchSets()).sets.find((candidate) => candidate.id === set.id);
+    if (generation !== workspaceGeneration) return;
+    // A copy owns only its captured snapshot. Preserve edits made while it was saving.
+    if (
+      draftSets.value.find((candidate) => candidate.id === set.id) !== set ||
+      (activeDraftSetId.value === set.id && hasUnsavedSetName.value)
+    )
+      return;
     if (saved) {
       replaceDraftSet(saved);
       saveQueue.remember(saved.id, saved.revision);
@@ -812,9 +1081,9 @@ async function copyUnsavedSet(): Promise<void> {
     delete saveFailures.value[set.id];
     saveQueue.unblock(set.id);
   } catch (error) {
-    setErrorMessage.value = error;
+    if (revision === navigationRevision) setErrorMessage.value = error;
   } finally {
-    isSetSaving.value = false;
+    isSetSaving.value = pendingSetWrites.value > 0;
   }
 }
 
@@ -831,8 +1100,10 @@ watch(activeDraftTrackIds, (trackIds) => {
 watch(
   selectedTrack,
   async (track) => {
+    const revision = ++harmonyRevision;
     trackHarmony.value = null;
     harmonyErrorMessage.value = "";
+    isHarmonyLoading.value = false;
 
     if (!track) {
       return;
@@ -841,11 +1112,12 @@ watch(
     isHarmonyLoading.value = true;
 
     try {
-      trackHarmony.value = await fetchTrackHarmony(track.id);
+      const harmony = await fetchTrackHarmony(track.id);
+      if (revision === harmonyRevision) trackHarmony.value = harmony;
     } catch (error) {
-      harmonyErrorMessage.value = error;
+      if (revision === harmonyRevision) harmonyErrorMessage.value = error;
     } finally {
-      isHarmonyLoading.value = false;
+      if (revision === harmonyRevision) isHarmonyLoading.value = false;
     }
   },
   {
@@ -868,6 +1140,7 @@ watch(
     }
 
     await nextTick();
+    if (!playbackIntent.value || selectedTrack.value?.id !== track.id) return;
     applyAudioTempoPreview(audioPlayer.value);
     await audioPlayer.value?.play().catch(() => undefined);
   },
@@ -890,6 +1163,10 @@ watch(
 watch(
   selectedTrack,
   (track, previousTrack) => {
+    if (track?.id !== previousTrack?.id) {
+      trackLinkMessage.value = "";
+      trackLinkFallback.value = "";
+    }
     if (track?.id !== previousTrack?.id || track?.audioUrl !== previousTrack?.audioUrl) {
       resetAudioPlaybackState();
     }
@@ -922,6 +1199,33 @@ watch(isTrackSearchActive, (isActive) => {
     setActiveMobilePanel("tracks");
   }
 });
+
+watch(hasCompatibilityReference, (hasReference) => {
+  if (!hasReference && compatibleOnly.value) {
+    compatibleOnly.value = false;
+    compatibilityNotice.value = "Compatibility was turned off because there is no reference track.";
+  }
+});
+
+watch([normalizedTrackSearchQuery, compatibleOnly], () => {
+  cancelTargetBpmScroll();
+  hasPendingTargetBpmJump.value = false;
+  void nextTick(() => {
+    if (browserGrid.value) browserGrid.value.scrollTop = 0;
+  });
+});
+
+watch(
+  () => trackFilters.value.setPresence,
+  async (value) => {
+    if (value === "all") return;
+    try {
+      await loadSavedSets();
+    } catch (error) {
+      setErrorMessage.value = error;
+    }
+  },
+);
 
 watch(activeMobilePanel, (panel) => {
   if (panel === "tracks" && hasPendingTargetBpmJump.value) {
@@ -1081,8 +1385,8 @@ function seekGlobalPlayer(event: Event): void {
   syncAudioPlaybackState(audioElement);
 }
 
-function selectSectionSlice(index: number, slice: SectionSlice): void {
-  setCircleSelection({ kind: "slice", section: index, slice }, { jumpToTargetBpm: true });
+function selectSectionSlice(index: number): void {
+  selectSection(index);
 }
 
 function selectBoundary(boundaryIndex: number): void {
@@ -1090,34 +1394,29 @@ function selectBoundary(boundaryIndex: number): void {
 }
 
 function selectTrack(track: TrackView): void {
+  const revision = beginSelectionIntent();
   selectedTrack.value = track;
-  let didChangeCircleSelection = false;
-
-  if (!isReplaceMode.value) {
-    didChangeCircleSelection = syncCircleSelectionToTrack(track);
-  }
-
+  unavailableTrackId.value = null;
+  writeNavigation({ trackId: track.id }, false, revision);
   setActiveMobilePanel("focus");
-
-  if (didChangeCircleSelection) {
-    requestTargetBpmJump();
-  }
 }
 
 function selectBrowserTrack(track: TrackView): void {
-  selectedTrack.value = track;
-  if (!isReplaceMode.value) {
-    syncCircleSelectionToTrack(track);
-  }
+  selectTrack(track);
   setActiveMobilePanel(isReplaceMode.value ? "tracks" : "focus");
+}
+
+function openTrackLink(event: MouseEvent, track: TrackView): void {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+    return;
+  event.preventDefault();
+  selectBrowserTrack(track);
 }
 
 function selectDraftReplacementTarget(index: number, track: TrackView): void {
   selectedDraftIndex.value = index;
-  selectedTrack.value = track;
-  syncCircleSelectionToTrack(track);
+  selectTrack(track);
   setActiveMobilePanel("tracks");
-  requestTargetBpmJump();
 }
 
 function clearSelectedDraftSlot(): void {
@@ -1133,11 +1432,16 @@ function setCircleSelection(
   options: { jumpToTargetBpm?: boolean } = {},
 ): void {
   circleSelection.value = selection;
-  selectPreferredBrowserTrack();
   setActiveMobilePanel("tracks");
 
-  if (options.jumpToTargetBpm) {
-    jumpToTargetBpm();
+  if (options.jumpToTargetBpm && !normalizedTrackSearchQuery.value) {
+    requestTargetBpmJump();
+  } else {
+    cancelTargetBpmScroll();
+    hasPendingTargetBpmJump.value = false;
+    void nextTick(() => {
+      if (browserGrid.value) browserGrid.value.scrollTop = 0;
+    });
   }
 }
 
@@ -1183,24 +1487,16 @@ function selectFirstSearchResult(): void {
   }
 }
 
-function selectPreferredBrowserTrack(): void {
-  const currentTrack = selectedTrack.value;
-
-  if (currentTrack && browserTracks.value.some((track) => track.id === currentTrack.id)) {
-    return;
-  }
-
-  selectedTrack.value = getPreferredBrowserTrack(browserTracks.value) ?? currentTrack;
-}
-
-function getPreferredBrowserTrack(trackList: readonly TrackView[]): TrackView | null {
-  return trackList.find((track) => !isAddButtonRedForTrack(track)) ?? trackList[0] ?? null;
-}
-
 function jumpToTargetBpm(): void {
-  const closestTrack = findClosestBpmTrack(browserTargetBpm.value, browserTracks.value);
+  cancelTargetBpmScroll();
+  const closestTrack = getPriorityBpmTarget(
+    browserTargetBpm.value,
+    browserTracks.value,
+    browserPriority.value,
+  );
 
   if (!closestTrack) {
+    if (browserGrid.value) browserGrid.value.scrollTop = 0;
     return;
   }
 
@@ -1308,14 +1604,23 @@ function getTrackDraftCompatibility(track: TrackView): DraftCandidateCompatibili
   return getDraftCandidateCompatibility(draftTransitionContext.value, track, canTracksFollow);
 }
 
-function selectDraftSet(id: string): void {
+async function selectDraftSet(id: string): Promise<void> {
+  const revision = beginSelectionIntent();
+  await saveActiveSetName();
+  if (revision !== navigationRevision || hasUnsavedSetName.value) return;
   activeDraftSetId.value = id;
   selectedDraftIndex.value = null;
+  isSetPickerOpen.value = false;
+  setErrorMessage.value = "";
+  writeNavigation({ setId: id }, false, revision);
 }
 
 async function createDraftSetFromInput(): Promise<void> {
   if (!isWorkspaceReady.value || isSetSaving.value) return;
+  const revision = beginSelectionIntent();
   const name = newSetName.value.trim();
+  await saveActiveSetName();
+  if (revision !== navigationRevision || hasUnsavedSetName.value) return;
 
   if (!name) {
     setErrorMessage.value = "Set name is required";
@@ -1328,20 +1633,25 @@ async function createDraftSetFromInput(): Promise<void> {
   try {
     const setDraft = await createSet(name);
     saveQueue.remember(setDraft.id, setDraft.revision);
-    showNewAccessLink();
+    showNewAccessLink(revision === navigationRevision);
 
     draftSets.value = [...draftSets.value, setDraft];
+    if (revision !== navigationRevision) return;
     activeDraftSetId.value = setDraft.id;
+    writeNavigation({ setId: setDraft.id }, false, revision);
     selectedDraftIndex.value = null;
     newSetName.value = "";
+    isSetCreatorOpen.value = false;
+    isSetPickerOpen.value = false;
   } catch (error) {
-    setErrorMessage.value = error;
+    if (revision === navigationRevision) setErrorMessage.value = error;
   } finally {
-    isSetSaving.value = false;
+    isSetSaving.value = pendingSetWrites.value > 0;
   }
 }
 
 function scheduleSetNameSave(): void {
+  beginSelectionIntent();
   clearTimeout(setNameSaveTimer);
   setNameSaveTimer = setTimeout(() => void saveActiveSetName(), 350);
 }
@@ -1351,7 +1661,7 @@ async function saveActiveSetName(): Promise<void> {
   const activeSet = activeDraftSet.value;
   const name = renameSetName.value.trim();
 
-  if (!activeSet || activeSet.isDemo || name === activeSet.name) {
+  if (!activeSet || name === activeSet.name) {
     return;
   }
 
@@ -1378,25 +1688,32 @@ async function deleteActiveSet(): Promise<void> {
     return;
   }
 
+  const revision = beginSelectionIntent();
+  const generation = workspaceGeneration;
   setErrorMessage.value = "";
   isSetSaving.value = true;
+  clearTimeout(setNameSaveTimer);
 
   try {
-    if (!activeSet.isDemo) {
-      await deleteSet(activeSet.id, saveQueue.revision(activeSet.id));
-    }
+    await deleteSet(activeSet.id, saveQueue.revision(activeSet.id));
+    if (generation !== workspaceGeneration) return;
 
+    deletedSetIds.add(activeSet.id);
     draftSets.value = draftSets.value.filter((setDraft) => setDraft.id !== activeSet.id);
     delete saveFailures.value[activeSet.id];
     saveQueue.unblock(activeSet.id);
-    activeDraftSetId.value = draftSets.value[0]?.id ?? "";
-    selectedDraftIndex.value = null;
+    if (activeDraftSetId.value === activeSet.id) {
+      activeDraftSetId.value = "";
+      selectedDraftIndex.value = null;
+    }
+    if (readNavigation(window.location.href).setId === activeSet.id)
+      writeNavigation({ setId: null }, revision !== navigationRevision, navigationRevision);
   } catch (error) {
-    setErrorMessage.value = error;
+    if (revision === navigationRevision) setErrorMessage.value = error;
     if (error instanceof ApiError && error.status === 409)
       saveFailures.value[activeSet.id] = { message: error, conflict: true };
   } finally {
-    isSetSaving.value = false;
+    isSetSaving.value = pendingSetWrites.value > 0;
   }
 }
 
@@ -1408,18 +1725,22 @@ async function addSelectedTrack(): Promise<void> {
   )
     return;
   if (!activeDraftSet.value) {
-    if (!isPublicMode.value || isSetSaving.value) return;
+    if (isSetSaving.value) return;
+    const revision = beginSelectionIntent();
+    const trackId = selectedTrack.value.id;
     isSetSaving.value = true;
     try {
-      const set = await createSet(t("My first set"), [selectedTrack.value.id]);
+      const set = await createSet(t("My first set"), [trackId]);
+      showNewAccessLink(revision === navigationRevision);
       draftSets.value.push(set);
-      activeDraftSetId.value = set.id;
       saveQueue.remember(set.id, set.revision);
-      showNewAccessLink();
+      if (revision !== navigationRevision) return;
+      activeDraftSetId.value = set.id;
+      writeNavigation({ setId: set.id }, false, revision);
     } catch (error) {
-      setErrorMessage.value = error;
+      if (revision === navigationRevision) setErrorMessage.value = error;
     } finally {
-      isSetSaving.value = false;
+      isSetSaving.value = pendingSetWrites.value > 0;
     }
     return;
   }
@@ -1736,9 +2057,6 @@ async function patchTrackAnalysis(
 
     if (selectedTrack.value?.id === trackId) {
       selectedTrack.value = updatedTrack;
-      if (!isReplaceMode.value) {
-        syncCircleSelectionToTrack(updatedTrack);
-      }
     }
 
     return true;
@@ -2203,45 +2521,6 @@ function updateTrackInState(track: TrackView): void {
   tracks.value = tracks.value.map((candidate) => (candidate.id === track.id ? track : candidate));
 }
 
-function syncCircleSelectionToTrack(track: TrackView): boolean {
-  const nextSelection = getCircleSelectionForTrack(track);
-  const didChange = !areCircleSelectionsEqual(circleSelection.value, nextSelection);
-
-  circleSelection.value = nextSelection;
-
-  return didChange;
-}
-
-function areCircleSelectionsEqual(
-  first: CircleSelection | null,
-  second: CircleSelection | null,
-): boolean {
-  if (!first || !second) {
-    return first === second;
-  }
-
-  if (first.kind !== second.kind) {
-    return false;
-  }
-
-  switch (first.kind) {
-    case "unknown":
-      return true;
-    case "section":
-      return second.kind === "section" && first.section === second.section;
-    case "slice":
-      return (
-        second.kind === "slice" && first.section === second.section && first.slice === second.slice
-      );
-    case "boundary":
-      return (
-        second.kind === "boundary" && Math.abs(first.boundaryIndex - second.boundaryIndex) < 0.01
-      );
-    default:
-      return assertNever(first);
-  }
-}
-
 function getSelectedKeyOrDefault(): TrackKey {
   return (
     selectedTrack.value?.key ?? {
@@ -2303,128 +2582,6 @@ function parseDelimitedText(value: string): string[] {
     .split(/[,\n]/)
     .map((item) => item.trim())
     .filter(Boolean);
-}
-
-function buildDemoTrackViews(): TrackView[] {
-  return sampleTracks.map((track) => ({
-    ...track,
-    audioAvailable: false,
-    audioFileName: null,
-    audioUrl: null,
-    keyLabel: describeKey(track.key),
-    placement: track.key ? getModalPlacement(track.key) : null,
-  }));
-}
-
-function buildMockDraftSets(sourceTracks: readonly TrackView[]): DraftSet[] {
-  return [
-    {
-      comment: "Local demo set",
-      id: "main",
-      isDemo: true,
-      name: "Festival draft",
-      trackIds: buildClockwiseDraft(sourceTracks, DEFAULT_DRAFT_START_SECTION),
-    },
-    {
-      comment: "Local demo set",
-      id: "warmup",
-      isDemo: true,
-      name: "Warmup arc",
-      trackIds: buildClockwiseDraft(sourceTracks, 9),
-    },
-    {
-      comment: "Local demo set",
-      id: "bridge",
-      isDemo: true,
-      name: "Bridge ideas",
-      trackIds: buildClockwiseDraft(sourceTracks, 3),
-    },
-  ];
-}
-
-function buildClockwiseDraft(
-  sourceTracks: readonly TrackView[],
-  preferredStart = DEFAULT_DRAFT_START_SECTION,
-): string[] {
-  const starts = [
-    preferredStart,
-    ...sections.value.map((section) => section.index).filter((index) => index !== preferredStart),
-  ];
-  let bestDraft: string[] = [];
-
-  for (const start of starts) {
-    const usedTrackIds = new Set<string>();
-    const draft: string[] = [];
-
-    for (let offset = 0; offset < DEFAULT_DRAFT_LENGTH; offset += 1) {
-      const sectionIndex = (start + offset) % 12;
-      const track = pickDraftTrackForSection(sourceTracks, sectionIndex, usedTrackIds);
-
-      if (!track) {
-        break;
-      }
-
-      usedTrackIds.add(track.id);
-      draft.push(track.id);
-    }
-
-    if (draft.length > bestDraft.length) {
-      bestDraft = draft;
-    }
-
-    if (draft.length === DEFAULT_DRAFT_LENGTH) {
-      return draft;
-    }
-  }
-
-  return bestDraft;
-}
-
-function pickDraftTrackForSection(
-  sourceTracks: readonly TrackView[],
-  sectionIndex: number,
-  usedTrackIds: ReadonlySet<string>,
-): TrackView | null {
-  const candidates = sourceTracks
-    .filter((track) => !usedTrackIds.has(track.id) && getTrackSectionIndex(track) === sectionIndex)
-    .sort(compareDraftCandidates);
-
-  return candidates[0] ?? null;
-}
-
-function compareDraftCandidates(first: TrackView, second: TrackView): number {
-  const firstScore = getDraftCandidateScore(first);
-  const secondScore = getDraftCandidateScore(second);
-
-  if (firstScore !== secondScore) {
-    return secondScore - firstScore;
-  }
-
-  const bpmComparison = compareNullableBpmThenTitle(first, second);
-
-  if (bpmComparison !== 0) {
-    return bpmComparison;
-  }
-
-  return first.title.localeCompare(second.title);
-}
-
-function getDraftCandidateScore(track: TrackView): number {
-  let score = 0;
-
-  if (track.placement?.lane === "home") {
-    score += 2;
-  }
-
-  if (track.confidence.key === "confirmed") {
-    score += 1;
-  }
-
-  if (track.confidence.bpm === "confirmed") {
-    score += 1;
-  }
-
-  return score;
 }
 
 function hasHarmonyNotes(track: TrackView): boolean {
@@ -2556,56 +2713,6 @@ function getTrackSectionIndex(track: TrackView): number | null {
   return Math.round(track.placement.displayIndex) % 12;
 }
 
-function getCircleSelectionForTrack(track: TrackView): CircleSelection {
-  if (!track.placement) {
-    return {
-      kind: "unknown",
-    };
-  }
-
-  const boundaryIndex = getBoundaryIndex(track.placement);
-
-  if (boundaryIndex !== null) {
-    return {
-      boundaryIndex,
-      kind: "boundary",
-    };
-  }
-
-  const section = getTrackSectionIndex(track) ?? track.placement.homeIndex;
-  const slice = getTrackSectionSlice(track);
-  return {
-    kind: "slice",
-    section,
-    slice,
-  };
-}
-
-function matchesCircleSelection(track: TrackView, selection: CircleSelection | null): boolean {
-  if (!selection) {
-    return true;
-  }
-
-  switch (selection.kind) {
-    case "unknown":
-      return !track.key;
-    case "section":
-      return trackBelongsToSection(track, selection.section);
-    case "slice":
-      return trackBelongsToSectionSlice(track, selection.section, selection.slice);
-    case "boundary":
-      return trackTouchesBoundary(track, selection.boundaryIndex);
-    default:
-      return assertNever(selection);
-  }
-}
-
-function getTrackSectionSlice(track: TrackView): SectionSlice {
-  const pureSide = getPureModalSide(track);
-
-  return pureSide ?? "home";
-}
-
 function getPureModalSide(track: TrackView): Exclude<SectionSlice, "home"> | null {
   if (!track.placement || track.placement.lane !== "pure-modal") {
     return null;
@@ -2626,19 +2733,6 @@ function getBoundaryAfterIndex(index: number): number {
   return index === 11 ? 11.5 : index + 0.5;
 }
 
-function getSliceBrowserLabel(slice: SectionSlice): string {
-  switch (slice) {
-    case "home":
-      return t("natural");
-    case "pure-clockwise":
-      return t("clockwise pure modal");
-    case "pure-counter":
-      return t("counter pure modal");
-    default:
-      return assertNever(slice);
-  }
-}
-
 function canTracksFollow(previousTrack: TrackView, nextTrack: TrackView): boolean {
   return canKeysTransition(previousTrack.key, nextTrack.key);
 }
@@ -2652,10 +2746,6 @@ function isDraftTransitionRisky(index: number): boolean {
   const nextTrack = draftTracks.value[index];
 
   return Boolean(previousTrack && nextTrack && !canTracksFollow(previousTrack, nextTrack));
-}
-
-function sortBrowserTracks(trackList: readonly TrackView[]): TrackView[] {
-  return [...trackList].sort(compareBpmDescending);
 }
 
 function getDefaultTrackFilters(): TrackFilters {
@@ -2767,55 +2857,6 @@ function trackMatchesFilters(track: TrackView, filters: TrackFilters): boolean {
   }
 
   return true;
-}
-
-function getTrackSearchScore(track: TrackView, query: string): number {
-  const title = normalizeSearchText(track.title);
-  const artist = normalizeSearchText(track.artist ?? "");
-  const keyLabel = normalizeSearchText(`${displayKey(track)} ${track.keyLabel}`);
-  const tags = track.tags.map((tag) => normalizeSearchText(tag));
-  const combined = [title, artist, keyLabel, ...tags].filter(Boolean).join(" ");
-
-  if (title === query) {
-    return 1000;
-  }
-
-  if (title.startsWith(query)) {
-    return 900;
-  }
-
-  if (title.includes(query)) {
-    return 800;
-  }
-
-  if (artist.startsWith(query)) {
-    return 700;
-  }
-
-  if (artist.includes(query)) {
-    return 600;
-  }
-
-  if (tags.some((tag) => tag.includes(query))) {
-    return 500;
-  }
-
-  if (keyLabel.includes(query)) {
-    return 400;
-  }
-
-  const queryParts = query.split(/\s+/).filter(Boolean);
-
-  return queryParts.length > 1 && queryParts.every((part) => combined.includes(part)) ? 300 : 0;
-}
-
-function normalizeSearchText(value: string): string {
-  return value
-    .normalize("NFKD")
-    .replace(/\p{M}/gu, "")
-    .replace(/ё/g, "е")
-    .toLocaleLowerCase()
-    .trim();
 }
 
 function parseOptionalFilterNumber(value: string): number | null {
@@ -2973,21 +3014,9 @@ function getSelectedPositionLabel(): string {
       return t("{keys} boundary", { keys: `${beforeLabel} / ${afterLabel}` });
     }
     case "section":
-      return t("{key} section", { key: getSectionDisplayLabel(circleSelection.value.section) });
-    case "slice": {
-      const sectionLabel = getSectionDisplayLabel(circleSelection.value.section);
-
-      switch (circleSelection.value.slice) {
-        case "home":
-          return sectionLabel;
-        case "pure-clockwise":
-          return t("{key} clockwise modal", { key: sectionLabel });
-        case "pure-counter":
-          return t("{key} counter modal", { key: sectionLabel });
-        default:
-          return assertNever(circleSelection.value.slice);
-      }
-    }
+      return t("{key} section", {
+        key: getSectionDisplayLabel(circleSelection.value.section),
+      });
     default:
       return assertNever(circleSelection.value);
   }
@@ -2996,7 +3025,7 @@ function getSelectedPositionLabel(): string {
 function getCenterReadout(): CenterReadout {
   if (!circleSelection.value) {
     return {
-      subtitle: t("Circle filter off"),
+      subtitle: t("No sector priority"),
       title: t("All tracks"),
     };
   }
@@ -3021,29 +3050,6 @@ function getCenterReadout(): CenterReadout {
         subtitle: t("Section"),
         title: getSectionDisplayLabel(circleSelection.value.section),
       };
-    case "slice": {
-      const sectionLabel = getSectionDisplayLabel(circleSelection.value.section);
-
-      switch (circleSelection.value.slice) {
-        case "home":
-          return {
-            subtitle: t("Natural"),
-            title: sectionLabel,
-          };
-        case "pure-clockwise":
-          return {
-            subtitle: t("Clockwise modal"),
-            title: sectionLabel,
-          };
-        case "pure-counter":
-          return {
-            subtitle: t("Counter modal"),
-            title: sectionLabel,
-          };
-        default:
-          return assertNever(circleSelection.value.slice);
-      }
-    }
     default:
       return assertNever(circleSelection.value);
   }
@@ -3072,20 +3078,13 @@ function isBoundaryActive(boundaryIndex: number): boolean {
 }
 
 function isSectionSelected(index: number): boolean {
-  return Boolean(
-    circleSelection.value &&
-    circleSelection.value.kind === "section" &&
-    circleSelection.value.section === index,
+  return (
+    browserPriority.value?.kind === "sections" && browserPriority.value.sections.includes(index)
   );
 }
 
-function isSectionSliceSelected(index: number, slice: SectionSlice): boolean {
-  return Boolean(
-    circleSelection.value &&
-    circleSelection.value.kind === "slice" &&
-    circleSelection.value.section === index &&
-    circleSelection.value.slice === slice,
-  );
+function isSectionSliceSelected(index: number): boolean {
+  return isSectionSelected(index);
 }
 
 function isBoundarySelected(boundaryIndex: number): boolean {
@@ -3107,12 +3106,10 @@ function getBrowserEmptyTitle(): string {
 
 function getBrowserEmptyCopy(): string {
   if (isLoading.value) return t("Opening the catalog.");
+  if (compatibleOnly.value)
+    return t("No compatible matches. Turn off compatibility to search all tracks.");
   if (isTrackSearchActive.value) {
     return t("Try a different query or filter set.");
-  }
-
-  if (hasActiveCircleSelection.value) {
-    return selectedLabel.value;
   }
 
   return isPublicMode.value
@@ -3310,7 +3307,9 @@ function formatSampleRate(sampleRateHz: number | null): string | null {
   const kiloHertz = sampleRateHz / 1000;
   const rounded = Number(kiloHertz.toFixed(1));
 
-  return t("{rate} kHz", { rate: Number.isInteger(kiloHertz) ? kiloHertz : rounded });
+  return t("{rate} kHz", {
+    rate: Number.isInteger(kiloHertz) ? kiloHertz : rounded,
+  });
 }
 
 function formatBitrate(quality: NonNullable<TrackView["audioQuality"]>): string | null {
@@ -3486,6 +3485,12 @@ function assertNever(value: never): never {
       </div>
     </header>
 
+    <div v-if="hasHiddenSaveFailures" class="save-recovery" role="alert">
+      <p>
+        {{ t("Some sets could not be saved. Open them to recover your changes.") }}
+      </p>
+      <button type="button" @click="openSetPicker">{{ t("Open set") }}</button>
+    </div>
     <section class="desk-grid">
       <section
         class="wheel-panel"
@@ -3493,10 +3498,16 @@ function assertNever(value: never): never {
         :aria-label="t('Circle of fifths desk')"
         @click="clearCircleSelection"
       >
-        <div v-if="isLoading" class="state-line">{{ t("Loading modal map...") }}</div>
-        <div v-else-if="errorMessage" class="state-line error">{{ message(errorMessage) }}</div>
+        <div v-if="isLoading" class="state-line">
+          {{ t("Loading modal map...") }}
+        </div>
+        <div v-else-if="errorMessage" class="state-line error">
+          {{ message(errorMessage) }}
+        </div>
         <svg v-else class="circle-map" viewBox="-300 -300 600 600" role="img">
-          <title>{{ t("Tracks arranged by modal position on the circle of fifths") }}</title>
+          <title>
+            {{ t("Tracks arranged by modal position on the circle of fifths") }}
+          </title>
           <g>
             <path
               v-for="section in sections"
@@ -3519,10 +3530,10 @@ function assertNever(value: never): never {
                   incompatible:
                     getSectionSliceCompatibilityClass(zone.index, 'home') === 'incompatible',
                   'last-draft': isLastDraftSectionSlice(zone.index, 'home'),
-                  selected: isSectionSliceSelected(zone.index, 'home'),
+                  selected: isSectionSliceSelected(zone.index),
                 }"
                 :d="zone.mainPath"
-                @click.stop="selectSectionSlice(zone.index, 'home')"
+                @click.stop="selectSectionSlice(zone.index)"
               />
               <path
                 class="subsection pure-modal"
@@ -3535,10 +3546,10 @@ function assertNever(value: never): never {
                     getSectionSliceCompatibilityClass(zone.index, 'pure-counter') ===
                     'incompatible',
                   'last-draft': isLastDraftSectionSlice(zone.index, 'pure-counter'),
-                  selected: isSectionSliceSelected(zone.index, 'pure-counter'),
+                  selected: isSectionSliceSelected(zone.index),
                 }"
                 :d="zone.pureCounterPath"
-                @click.stop="selectSectionSlice(zone.index, 'pure-counter')"
+                @click.stop="selectSectionSlice(zone.index)"
               />
               <path
                 class="subsection pure-modal"
@@ -3552,10 +3563,10 @@ function assertNever(value: never): never {
                     getSectionSliceCompatibilityClass(zone.index, 'pure-clockwise') ===
                     'incompatible',
                   'last-draft': isLastDraftSectionSlice(zone.index, 'pure-clockwise'),
-                  selected: isSectionSliceSelected(zone.index, 'pure-clockwise'),
+                  selected: isSectionSliceSelected(zone.index),
                 }"
                 :d="zone.pureClockwisePath"
-                @click.stop="selectSectionSlice(zone.index, 'pure-clockwise')"
+                @click.stop="selectSectionSlice(zone.index)"
               />
 
               <text
@@ -3633,7 +3644,9 @@ function assertNever(value: never): never {
             :transform="labelTransform(section.index, 265)"
             @click.stop="selectSection(section.index)"
           >
-            <text class="label-main" text-anchor="middle">{{ section.label.primary }}</text>
+            <text class="label-main" text-anchor="middle">
+              {{ section.label.primary }}
+            </text>
             <text v-if="section.label.enharmonic" class="label-alt" y="17" text-anchor="middle">
               {{ section.label.enharmonic }}
             </text>
@@ -3668,11 +3681,40 @@ function assertNever(value: never): never {
         <div class="panel-heading">
           <div>
             <p class="eyebrow">{{ t("Sets") }}</p>
-            <h2>{{ activeDraftSet?.name ?? t("No set yet") }}</h2>
+            <h2>{{ activeDraftSet?.name ?? t("No set open") }}</h2>
           </div>
           <strong>{{ draftTracks.length }}</strong>
         </div>
-        <form class="new-set-form" @submit.prevent="createDraftSetFromInput">
+        <div class="set-actions">
+          <button
+            type="button"
+            class="secondary-action-button"
+            @click="isSetCreatorOpen = !isSetCreatorOpen"
+          >
+            {{ t("Create set") }}
+          </button>
+          <button
+            type="button"
+            class="secondary-action-button"
+            :aria-expanded="isSetPickerOpen"
+            @click="openSetPicker"
+          >
+            {{ t("Open set") }}
+          </button>
+          <button
+            v-if="activeDraftSet"
+            type="button"
+            class="secondary-action-button"
+            @click="closeDraftSet"
+          >
+            {{ t("Close set") }}
+          </button>
+        </div>
+        <form
+          v-if="isSetCreatorOpen"
+          class="new-set-form"
+          @submit.prevent="createDraftSetFromInput"
+        >
           <input
             v-model="newSetName"
             type="text"
@@ -3685,7 +3727,8 @@ function assertNever(value: never): never {
           </button>
         </form>
         <p v-if="workspaceError" class="mutation-error" role="alert">
-          {{ message(workspaceError) }} <a href="/">{{ t("Back to catalogue") }}</a>
+          {{ message(workspaceError) }}
+          <a href="/">{{ t("Back to catalogue") }}</a>
         </p>
         <p v-if="isPublicMode && !hasWorkspace && !workspaceError" class="workspace-hint">
           {{
@@ -3694,7 +3737,10 @@ function assertNever(value: never): never {
             )
           }}
         </p>
-        <div v-if="isPublicMode && hasWorkspace" class="workspace-access">
+        <div
+          v-if="isPublicMode && hasWorkspace && (activeDraftSet || isSetPickerOpen)"
+          class="workspace-access"
+        >
           <template v-if="accessLink">
             <label
               >{{ t("Private access link")
@@ -3706,7 +3752,9 @@ function assertNever(value: never): never {
                 spellcheck="false"
                 @focus="($event.target as HTMLInputElement).select()"
             /></label>
-            <button type="button" @click="copyAccessLink">{{ t("Copy link") }}</button>
+            <button type="button" @click="copyAccessLink">
+              {{ t("Copy link") }}
+            </button>
             <button
               type="button"
               @click="
@@ -3756,7 +3804,14 @@ function assertNever(value: never): never {
             {{ t("Save my version as a copy") }}
           </button>
         </div>
-        <div class="set-tabs" :aria-label="t('Draft set selector')">
+        <div
+          v-if="isSetPickerOpen"
+          class="set-tabs"
+          :aria-label="t('Choose a saved set')"
+          :aria-busy="isLoadingSets"
+        >
+          <p v-if="isLoadingSets">{{ t("Loading sets…") }}</p>
+          <p v-else-if="draftSets.length === 0">{{ t("No saved sets") }}</p>
           <button
             v-for="draftSet in draftSets"
             :key="draftSet.id"
@@ -3773,7 +3828,6 @@ function assertNever(value: never): never {
           <input
             v-model="renameSetName"
             type="text"
-            :disabled="activeDraftSet.isDemo"
             maxlength="120"
             :aria-label="t('Set name')"
             @input="scheduleSetNameSave"
@@ -3790,8 +3844,11 @@ function assertNever(value: never): never {
             ×
           </button>
         </div>
-        <p v-if="setErrorMessage" class="mutation-error">{{ message(setErrorMessage) }}</p>
+        <p v-if="setErrorMessage" class="mutation-error">
+          {{ message(setErrorMessage) }}
+        </p>
         <button
+          v-if="activeDraftSet"
           type="button"
           class="sort-harmonic-button"
           :disabled="activeDraftTrackIds.length < 2 || isSetSaving"
@@ -3800,7 +3857,7 @@ function assertNever(value: never): never {
         >
           {{ t("Sort harmonically") }}
         </button>
-        <p v-if="draftSets.length === 0" class="empty-state">
+        <p v-if="!activeDraftSet" class="empty-state">
           {{ t("Create a set to start saving a real running order.") }}
         </p>
         <ol v-else ref="setChainList">
@@ -3903,14 +3960,6 @@ function assertNever(value: never): never {
           <div class="browser-heading-copy">
             <div class="browser-heading-topline">
               <p class="eyebrow">{{ browserEyebrow }}</p>
-              <button
-                v-if="hasActiveCircleSelection"
-                type="button"
-                class="browser-reset-chip"
-                @click="clearCircleSelection"
-              >
-                {{ t("All tracks") }}
-              </button>
             </div>
             <h2>{{ browserTitle }}</h2>
           </div>
@@ -3939,7 +3988,9 @@ function assertNever(value: never): never {
               <button
                 type="button"
                 class="filter-toggle-button"
-                :class="{ active: areTrackFiltersOpen || activeTrackFiltersCount > 0 }"
+                :class="{
+                  active: areTrackFiltersOpen || activeTrackFiltersCount > 0,
+                }"
                 @click="areTrackFiltersOpen = !areTrackFiltersOpen"
               >
                 {{ t("Filters")
@@ -3972,8 +4023,12 @@ function assertNever(value: never): never {
                       <option value="all">{{ t("Any quality") }}</option>
                       <option value="hq">{{ t("True HQ") }}</option>
                       <option value="lossy">{{ t("Lossy") }}</option>
-                      <option value="lossy-plus">{{ t("High-bitrate lossy") }}</option>
-                      <option value="not-analyzed">{{ t("Not analyzed") }}</option>
+                      <option value="lossy-plus">
+                        {{ t("High-bitrate lossy") }}
+                      </option>
+                      <option value="not-analyzed">
+                        {{ t("Not analyzed") }}
+                      </option>
                     </select>
                   </label>
                   <label>
@@ -4056,6 +4111,34 @@ function assertNever(value: never): never {
               </div>
             </div>
           </div>
+          <div class="browser-scope-controls">
+            <label class="compatibility-toggle">
+              <input
+                v-model="compatibleOnly"
+                type="checkbox"
+                :disabled="!hasCompatibilityReference"
+                aria-describedby="compatibility-context"
+                @change="compatibilityNotice = ''"
+              />
+              <span>{{ t("Only compatible") }}</span>
+            </label>
+            <small id="compatibility-context">{{ compatibilityContextLabel }}</small>
+            <button
+              v-if="hasActiveCircleSelection"
+              type="button"
+              class="browser-reset-chip"
+              :aria-label="`${t('First: {selection}', { selection: selectedLabel })}. ${t('Clear priority')}`"
+              @click="clearCircleSelection"
+            >
+              {{ t("First: {selection}", { selection: selectedLabel }) }} ×
+            </button>
+            <small v-if="hasActiveCircleSelection && !hasPreferredMatches && browserTracks.length">
+              {{ t("No matches in the preferred sector. Other matches are shown.") }}
+            </small>
+            <small v-if="compatibilityNotice" role="status">{{
+              message(compatibilityNotice)
+            }}</small>
+          </div>
           <div v-if="isReplaceMode" class="replace-mode-banner">
             <div>
               <span class="replace-mode-title">{{ replaceModeTitle }}</span>
@@ -4101,10 +4184,12 @@ function assertNever(value: never): never {
             <button
               type="button"
               class="add-button"
-              :class="{ risky: isAddTransitionRisky, used: selectedTrackInAnyDraftSet }"
+              :class="{
+                risky: isAddTransitionRisky,
+                used: selectedTrackInAnyDraftSet,
+              }"
               :disabled="
                 !selectedTrack ||
-                (!activeDraftSet && !isPublicMode) ||
                 !isWorkspaceReady ||
                 (isSetSaving && !activeDraftSet) ||
                 !tracks.some((track) => track.id === selectedTrack?.id)
@@ -4128,6 +4213,14 @@ function assertNever(value: never): never {
           <strong>{{ getBrowserEmptyTitle() }}</strong>
           <p>{{ getBrowserEmptyCopy() }}</p>
           <button
+            v-if="compatibleOnly"
+            type="button"
+            class="secondary-action-button"
+            @click="compatibleOnly = false"
+          >
+            {{ t("Turn off compatibility") }}
+          </button>
+          <button
             v-if="isTrackSearchActive"
             type="button"
             class="secondary-action-button"
@@ -4137,14 +4230,14 @@ function assertNever(value: never): never {
           </button>
         </div>
         <div v-else ref="browserGrid" class="browser-grid">
-          <button
+          <a
             v-for="track in browserTracks"
             :key="track.id"
-            type="button"
+            :href="trackHref(track.id)"
             class="track-row"
             :class="{ selected: selectedTrack?.id === track.id }"
             :data-track-id="track.id"
-            @click="selectBrowserTrack(track)"
+            @click="openTrackLink($event, track)"
           >
             <span class="row-badges">
               <span class="mode-chip" :class="track.placement?.lane ?? 'unknown-key'">
@@ -4215,7 +4308,7 @@ function assertNever(value: never): never {
                 <span></span>
               </span>
             </span>
-          </button>
+          </a>
         </div>
       </section>
 
@@ -4225,9 +4318,30 @@ function assertNever(value: never): never {
         :aria-label="t('Selected track')"
       >
         <p class="eyebrow">{{ t("Focus track") }}</p>
+        <p v-if="unavailableTrackId" role="status">
+          {{ t("This track is unavailable.") }}
+        </p>
         <template v-if="selectedTrack">
-          <h2>{{ selectedTrack.title }}</h2>
+          <h2>
+            <a
+              class="track-title-link"
+              :href="trackHref(selectedTrack.id)"
+              @click="openTrackLink($event, selectedTrack)"
+              >{{ selectedTrack.title }}</a
+            >
+          </h2>
           <p class="artist">{{ selectedTrack.artist }}</p>
+          <button type="button" class="secondary-action-button" @click="copyTrackLink">
+            {{ t("Copy track link") }}
+          </button>
+          <p v-if="trackLinkMessage" role="status">{{ trackLinkMessage }}</p>
+          <input
+            v-if="trackLinkFallback"
+            :value="trackLinkFallback"
+            readonly
+            :aria-label="t('Copy track link')"
+            @focus="($event.target as HTMLInputElement).select()"
+          />
           <section class="track-audio-panel" :class="{ empty: !selectedTrack.audioAvailable }">
             <div class="track-audio-heading">
               <span>{{ t("Audio") }}</span>
@@ -4250,7 +4364,9 @@ function assertNever(value: never): never {
               @pause="handleAudioPause"
               @timeupdate="handleAudioTimeUpdate"
             ></audio>
-            <p v-else class="muted">{{ t("Audio is not available for this track.") }}</p>
+            <p v-else class="muted">
+              {{ t("Audio is not available for this track.") }}
+            </p>
             <a
               v-if="isPublicMode && selectedTrack.audioUrl"
               class="audio-download"
@@ -4464,7 +4580,9 @@ function assertNever(value: never): never {
               />
             </label>
             <p v-if="isTrackSaving || isUploadingAudio" class="muted">Saving...</p>
-            <p v-if="trackEditErrorMessage" class="mutation-error">{{ trackEditErrorMessage }}</p>
+            <p v-if="trackEditErrorMessage" class="mutation-error">
+              {{ trackEditErrorMessage }}
+            </p>
           </section>
           <dl>
             <div>
@@ -4528,7 +4646,9 @@ function assertNever(value: never): never {
               <dt>{{ t("Full chord table") }}</dt>
               <dd>
                 <details>
-                  <summary>{{ segmentCount(visibleChordSegments.length) }}</summary>
+                  <summary>
+                    {{ segmentCount(visibleChordSegments.length) }}
+                  </summary>
                   <div class="segment-table-wrap">
                     <table>
                       <thead>
@@ -4569,7 +4689,9 @@ function assertNever(value: never): never {
             <span v-for="tag in selectedTrack.tags" :key="tag">{{ tag }}</span>
           </div>
         </template>
-        <p v-else class="muted">{{ t("Select a dot or row.") }}</p>
+        <p v-else-if="!unavailableTrackId" class="muted">
+          {{ t("Select a track in the catalogue.") }}
+        </p>
       </aside>
     </section>
     <div
@@ -4623,7 +4745,9 @@ function assertNever(value: never): never {
               v-model="newTrackForm.keyMode"
               :disabled="newTrackForm.keyTonic === KEY_UNKNOWN_VALUE"
             >
-              <option v-for="mode in MODE_OPTIONS" :key="mode" :value="mode">{{ mode }}</option>
+              <option v-for="mode in MODE_OPTIONS" :key="mode" :value="mode">
+                {{ mode }}
+              </option>
             </select>
           </label>
           <label>
@@ -4666,7 +4790,9 @@ function assertNever(value: never): never {
           <input v-model="newTrackForm.shouldRetrieveAudio" type="checkbox" />
           <span>Try to retrieve audio automatically</span>
         </label>
-        <p v-if="createTrackErrorMessage" class="mutation-error">{{ createTrackErrorMessage }}</p>
+        <p v-if="createTrackErrorMessage" class="mutation-error">
+          {{ createTrackErrorMessage }}
+        </p>
         <div class="dialog-actions">
           <button type="button" class="secondary-action-button" @click="closeNewTrackDialog">
             Cancel
@@ -4716,8 +4842,12 @@ function assertNever(value: never): never {
               </strong>
               <small>{{ retrievalJob?.input ?? "No retrieval has been started yet." }}</small>
             </div>
-            <p v-if="retrievalErrorMessage" class="mutation-error">{{ retrievalErrorMessage }}</p>
-            <p v-if="retrievalJob?.error" class="mutation-error">{{ retrievalJob.error }}</p>
+            <p v-if="retrievalErrorMessage" class="mutation-error">
+              {{ retrievalErrorMessage }}
+            </p>
+            <p v-if="retrievalJob?.error" class="mutation-error">
+              {{ retrievalJob.error }}
+            </p>
             <div class="retrieval-action-grid">
               <button
                 type="button"

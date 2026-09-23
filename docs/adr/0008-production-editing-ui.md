@@ -4,6 +4,11 @@
 
 Accepted.
 
+The client demo-data flag and mock-set generation below are superseded by
+[ADR 0010](0010-global-search-and-explicit-set-navigation.md):
+`VITE_ENABLE_DEMO_DATA` has been removed. The original decision remains here as
+historical context.
+
 ## Date
 
 2026-04-20

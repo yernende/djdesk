@@ -11,14 +11,18 @@ and private saved sets. Built for planning Brazilian zouk and other music journe
 
 ## Plan the next transition
 
-- Explore a modal circle of fifths and filter the catalogue by harmonic context.
-- Search by track, artist or key; narrow the results by BPM, audio availability and quality.
+- Search the whole catalogue by track, artist or key; listening never locks the search to a key.
+- Prioritize whole sectors on the modal circle, or explicitly enable compatible tracks for a set position.
+- Narrow results with separate BPM, audio availability and quality filters.
 - Preview linked audio, seek through a recording and download available files.
 - Build sets with drag-and-drop ordering, repeated tracks, replacements and harmonic sorting.
 - Save multiple private sets in the public demo, then open them on another device with a secret link.
+- Share a track link without sharing access to your sets.
 - Switch between English and Russian, and between letters, solfege, Camelot and Open Key notation.
 
 The harmonic map helps you find candidates; your ears decide whether a transition works.
+The home page starts with an empty editor. Create or open a set explicitly; its address
+keeps the selected set available after a refresh when you have access.
 
 ![An assembled set with ordering and harmonic transition controls](docs/images/set-planner.png)
 
@@ -45,6 +49,8 @@ The public demo has no accounts or public set pages. Keep your workspace link so
 safe: anyone with that link can edit your sets, and there is no account-based recovery.
 Browser sessions last 30 days; replacing the link revokes previous sessions.
 The [public-mode design](docs/public-demo.md) explains isolation, publication and saving.
+The [browsing and navigation decision](docs/adr/0010-global-search-and-explicit-set-navigation.md)
+describes sector priority, optional compatibility and direct links.
 
 ## Quick start
 

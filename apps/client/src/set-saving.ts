@@ -19,6 +19,10 @@ export class SetSaveQueue {
     return this.blocked.has(id);
   }
 
+  async flush(): Promise<void> {
+    await this.tail;
+  }
+
   save<T extends { revision?: number }>(
     id: string,
     operation: (revision: number | undefined) => Promise<T>,

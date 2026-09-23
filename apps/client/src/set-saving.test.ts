@@ -68,9 +68,51 @@ test("failed saves stop dependent writes but other sets and explicit retry still
   assert.equal(writes, 2);
 });
 
+test("flush waits for pending writes before leaving a workspace, including failed saves", async () => {
+  const queue = new SetSaveQueue();
+  let finish!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  let applied = false;
+  const saving = queue.save(
+    "one",
+    async () => {
+      await pending;
+      return { revision: 1 };
+    },
+    () => {
+      applied = true;
+    },
+  );
+  let flushed = false;
+  const flushing = queue.flush().then(() => {
+    flushed = true;
+  });
+  await Promise.resolve();
+  assert.equal(flushed, false);
+  finish();
+  await Promise.all([saving, flushing]);
+  assert.equal(applied, true);
+  assert.equal(flushed, true);
+
+  const failed = queue.save(
+    "two",
+    async () => {
+      throw new Error("offline");
+    },
+    () => assert.fail(),
+  );
+  await assert.rejects(failed, /offline/);
+  await queue.flush();
+  assert.equal(queue.isBlocked("two"), true);
+});
+
 test("withdrawn tracks preserve row positions and repeated IDs during remove/reorder", () => {
   const ids = ["a", "missing", "b", "a"];
-  const rows = resolveSetRows(ids, [{ id: "a" }, { id: "b" }], (id) => ({ id }));
+  const rows = resolveSetRows(ids, [{ id: "a" }, { id: "b" }], (id) => ({
+    id,
+  }));
   assert.deepEqual(
     rows.map((r) => r.id),
     ids,

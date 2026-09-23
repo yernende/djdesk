@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { canKeysTransition, type TrackKey } from "@djdesk/domain";
+
 import {
   formatDraftCompatibilityReason,
   getDraftCandidateCompatibility,
@@ -110,6 +112,102 @@ test("formats append and replace risk reasons", () => {
       getDraftCandidateCompatibility(replaceContext, track("bad-previous"), canFollow),
     ),
     "Breaks next link",
+  );
+});
+
+interface KeyedTestTrack extends TestTrack {
+  key: TrackKey | null;
+}
+
+function keyedTrack(
+  id: string,
+  tonic: TrackKey["tonic"] | null,
+  mode: TrackKey["mode"] = "natural-minor",
+  variant: TrackKey["variant"] = "diatonic",
+): KeyedTestTrack {
+  return { id, key: tonic ? { tonic, mode, variant } : null };
+}
+
+function canKeyedTracksFollow(previous: KeyedTestTrack, next: KeyedTestTrack): boolean {
+  return canKeysTransition(previous.key, next.key);
+}
+
+test("compatible candidate filtering uses the set endpoint while retaining neighboring collections", () => {
+  const context = getDraftTransitionContext([keyedTrack("endpoint", "A")], null);
+  const candidates = [
+    keyedTrack("same", "A"),
+    keyedTrack("counter", "D"),
+    keyedTrack("clockwise", "E"),
+    keyedTrack("modal-clockwise", "A", "dorian"),
+    keyedTrack("boundary", "A", "dorian", "variable-degree"),
+    keyedTrack("too-far", "B"),
+    keyedTrack("unknown", null),
+  ];
+  const matches = () =>
+    candidates
+      .filter(
+        (candidate) =>
+          !getDraftCandidateCompatibility(context, candidate, canKeyedTracksFollow).isRisky,
+      )
+      .map(({ id }) => id);
+
+  assert.deepEqual(matches(), ["same", "counter", "clockwise", "modal-clockwise", "boundary"]);
+  getDraftCandidateCompatibility(context, keyedTrack("auditioned", "F#"), canKeyedTracksFollow);
+  assert.equal(context.previousTrack?.id, "endpoint");
+  assert.deepEqual(matches(), ["same", "counter", "clockwise", "modal-clockwise", "boundary"]);
+});
+
+test("replacement candidates must satisfy both canonical harmonic links", () => {
+  const context = getDraftTransitionContext(
+    [keyedTrack("previous", "A"), keyedTrack("replaced", "F"), keyedTrack("next", "B")],
+    1,
+  );
+  const risk = (candidate: KeyedTestTrack) =>
+    getDraftCandidateCompatibility(context, candidate, canKeyedTracksFollow).risk;
+
+  assert.equal(risk(keyedTrack("bridge", "E")), "none");
+  assert.equal(risk(keyedTrack("modal-bridge", "A", "dorian")), "none");
+  assert.equal(risk(keyedTrack("previous-only", "D")), "next");
+  assert.equal(risk(keyedTrack("next-only", "F#")), "previous");
+  assert.equal(risk(keyedTrack("wrong-boundary", "A", "dorian", "variable-degree")), "next");
+  assert.equal(risk(keyedTrack("unknown", null)), "both");
+});
+
+test("no-neighbor contexts stay unconstrained and expose the absent compatibility reference", () => {
+  const candidates = [keyedTrack("known", "A"), keyedTrack("unknown", null)];
+  const contexts = [
+    getDraftTransitionContext<KeyedTestTrack>([], null),
+    getDraftTransitionContext([keyedTrack("only-slot", "E")], 0),
+  ];
+
+  for (const context of contexts) {
+    assert.equal(context.previousTrack, null);
+    assert.equal(context.nextTrack, null);
+    assert.equal(context.referenceTrack, null);
+    for (const candidate of candidates) {
+      assert.equal(
+        getDraftCandidateCompatibility(context, candidate, canKeyedTracksFollow).isRisky,
+        false,
+      );
+    }
+  }
+});
+
+test("unknown-key neighbors cannot establish a compatible transition", () => {
+  const append = getDraftTransitionContext([keyedTrack("unknown-endpoint", null)], null);
+  const replace = getDraftTransitionContext(
+    [keyedTrack("selected", "A"), keyedTrack("unknown-next", null)],
+    0,
+  );
+
+  assert.equal(
+    getDraftCandidateCompatibility(append, keyedTrack("candidate", "A"), canKeyedTracksFollow).risk,
+    "previous",
+  );
+  assert.equal(
+    getDraftCandidateCompatibility(replace, keyedTrack("candidate", "A"), canKeyedTracksFollow)
+      .risk,
+    "next",
   );
 });
 

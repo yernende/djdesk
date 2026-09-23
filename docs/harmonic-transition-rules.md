@@ -1,7 +1,9 @@
 # Harmonic Transition Rules
 
 DJ Desk treats every analyzed key as a transition profile. The profile is used
-for the draft-set `Add` warning and for compatibility coloring on the circle.
+for set transition warnings, compatibility coloring on the circle, and the
+optional `Only compatible` filter. `canKeysTransition` in the domain package is
+the source of truth; the browsing changes do not alter these musical rules.
 
 ## Profiles
 
@@ -51,28 +53,25 @@ E Phrygian modal mixture:  Mi m / La m boundary
 C# Phrygian modal mixture: Do# m / Fa# m boundary
 ```
 
-## Directed Add Rules
+## Transition Rules
 
-The draft-set `Add` warning is directional: it checks whether the selected track
-can follow the last draft track.
+A `home` track uses its section as its effective collection. A `pure modal`
+track uses its target collection section, independently of its home tonic and
+mode. A modal-mixture track uses its pair of boundary sections instead of a
+single collection.
 
-- `home -> home` is valid when the sections are the same or adjacent.
-- `home -> pure modal` is valid when the home section is the pure modal track's
-  target collection section or a neighbor of that target collection section.
-- `pure modal -> home` is valid when the next home section is the pure modal
-  track's target collection section or a neighbor of that target collection
-  section.
-- `pure modal -> pure modal` is valid when both tracks use the same modal mode
-  and their home sections are the same or adjacent.
-- `home -> modal mixture` is valid when the home section belongs to that
-  modal-mixture boundary.
-- `modal mixture -> home` is valid when the home section belongs to that
-  modal-mixture boundary.
-- `modal mixture -> modal mixture` is valid only when both tracks use the same
-  boundary.
-- `modal mixture -> pure modal` is valid only into the same tonic and same mode.
+- Between any two `home` or `pure modal` tracks, the effective collections must
+  be the same or adjacent on the circle, including across the wraparound.
+- Between a `home` or `pure modal` track and a `modal mixture`, the effective
+  collection must be one of that mixture's boundary sections.
+- Between two `modal mixture` tracks, both must use the same boundary pair.
+- A track with an unknown key cannot form a confirmed compatible transition.
 
-No other cross-lane transition is considered valid in the current spike.
+These rules currently give symmetric results, but callers still check each
+transition in playback order. Adding checks `last track -> candidate`.
+Replacing a position checks both `previous track -> candidate` and
+`candidate -> next track`; a missing neighbor creates no constraint. Replacing
+the only track in a set therefore has no reference for compatibility filtering.
 
 ## Reference Cases
 
@@ -89,12 +88,16 @@ A natural minor -> E Phrygian pure        valid
 A natural minor -> E Dorian mixture       warning
 A Dorian pure -> B natural minor          valid
 B natural minor -> A Dorian pure          valid
+A Dorian pure -> E Phrygian pure          valid
+A Dorian pure -> D Mixolydian pure        valid
+A Dorian pure -> A Phrygian pure          warning
 
 A natural minor -> A Dorian mixture       valid
 A natural minor -> E Phrygian mixture     valid
 A Dorian mixture -> E natural minor       valid
 A Dorian mixture -> A natural minor       valid
 A Dorian mixture -> A Dorian pure         valid
+A Dorian mixture -> E Phrygian pure       valid
 A Dorian mixture -> E Dorian pure         warning
 A Dorian mixture -> E Phrygian mixture    valid
 
@@ -102,13 +105,25 @@ F# natural minor -> C# Phrygian mixture   valid
 D natural minor -> A Dorian mixture       warning
 ```
 
-## Draft Reference Coloring
+## Set Context and Browsing
 
-Circle coloring uses the last track in the draft set as the reference track,
-because the map should answer the planning question "what can I pick next?".
-Selecting a row or a circle zone changes the focus panel and browser content, but
-does not change the compatibility colors.
+Circle coloring and `Only compatible` use the current set position: the final
+track when appending, or both available neighbors when replacing. A zone is
+colored compatible when at least one of its tracks passes all applicable
+transition checks. Empty zones and positions without either neighbor have no
+compatibility color. Selecting or listening to a candidate does not change the
+set context; changing the set order or selected position does.
 
-A zone is compatible with the last draft track when at least one track in that
-zone can either follow the draft track or precede it. This symmetric rule keeps
-the map useful when browsing around the current draft endpoint.
+The catalogue is global by default. Clicking any subsection prioritizes its
+whole large sector; clicking a boundary prioritizes the union of both adjacent
+sectors without duplicate tracks. This changes ordering only and does not hide
+other sectors. Text relevance precedes sector priority, then tracks are sorted
+by BPM within each group. Clearing the query, clearing sector priority, and
+turning off compatibility are separate actions.
+
+`Only compatible` is initially off and must be enabled explicitly. It filters
+by the transition rules above, without adding BPM or set-membership limits.
+It is unavailable without either reference neighbor and turns off if the
+reference disappears. Unknown-key candidates remain visible in global search
+but do not pass compatibility filtering when a reference exists. Transition
+warnings remain advisory: users can still add or replace with a risky track.

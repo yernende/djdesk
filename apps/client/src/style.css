@@ -130,6 +130,57 @@ h2 {
   margin-bottom: 0;
 }
 
+.browser-scope-controls {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.browser-scope-controls small {
+  color: #5e615d;
+  overflow-wrap: anywhere;
+}
+
+.compatibility-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.compatibility-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: #1c6f5d;
+}
+
+.set-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+a.track-row,
+.track-title-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.track-title-link:hover {
+  text-decoration: underline;
+}
+
+a.track-row:focus-visible {
+  outline: 3px solid #1c6f5d;
+  outline-offset: 2px;
+}
+
 .track-search-field {
   position: relative;
   min-width: 0;
