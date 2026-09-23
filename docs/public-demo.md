@@ -56,7 +56,8 @@ sector priority and BPM ordering. Only compatible is initially off and can be
 enabled explicitly against the last set track or the neighbors of a replacement
 position. BPM and existing set membership remain separate filters.
 
-Track titles and Copy track link provide `/?track=<id>` links. Copied links contain
+Track titles and the compact copy-link button beside the card title provide
+`/?track=<id>` links. Copied links contain
 no workspace path, set selection or secret and can be shared publicly. Opening one
 shows the track without starting audio or enabling search restrictions. Missing or
 unpublished tracks show an unavailable message instead of selecting another track.

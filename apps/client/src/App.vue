@@ -4322,18 +4322,40 @@ function assertNever(value: never): never {
           {{ t("This track is unavailable.") }}
         </p>
         <template v-if="selectedTrack">
-          <h2>
-            <a
-              class="track-title-link"
-              :href="trackHref(selectedTrack.id)"
-              @click="openTrackLink($event, selectedTrack)"
-              >{{ selectedTrack.title }}</a
+          <div class="focus-track-heading">
+            <h2>
+              <a
+                class="track-title-link"
+                :href="trackHref(selectedTrack.id)"
+                @click="openTrackLink($event, selectedTrack)"
+                >{{ selectedTrack.title }}</a
+              >
+            </h2>
+            <button
+              type="button"
+              class="track-link-button"
+              :title="t('Copy track link')"
+              :aria-label="t('Copy track link')"
+              @click="copyTrackLink"
             >
-          </h2>
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path d="M10 13a5 5 0 0 0 7.1 0l3-3a5 5 0 0 0-7.1-7.1l-1.7 1.7" />
+                <path d="M14 11a5 5 0 0 0-7.1 0l-3 3a5 5 0 0 0 7.1 7.1l1.7-1.7" />
+              </svg>
+            </button>
+          </div>
           <p class="artist">{{ selectedTrack.artist }}</p>
-          <button type="button" class="secondary-action-button" @click="copyTrackLink">
-            {{ t("Copy track link") }}
-          </button>
           <p v-if="trackLinkMessage" role="status">{{ trackLinkMessage }}</p>
           <input
             v-if="trackLinkFallback"

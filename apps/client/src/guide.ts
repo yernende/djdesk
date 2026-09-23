@@ -24,7 +24,7 @@ export const guide: Record<Locale, readonly { title: string; body: string }[]> =
     },
     {
       title: "Делитесь конкретным треком",
-      body: "Название трека — ссылка, которую можно открыть в другой вкладке. «Скопировать ссылку на трек» в карточке копирует адрес вида /?track=id. В нём нет выбранного сета или секретного доступа: такой ссылкой можно делиться. Она открывает карточку без запуска аудио и без ограничений поиска. Если трек недоступен, приложение сообщит об этом. Обновление страницы и кнопки браузера «Назад» и «Вперёд» сохраняют навигацию по ссылкам.",
+      body: "Название трека — ссылка, которую можно открыть в другой вкладке. Маленькая кнопка со значком ссылки справа от названия в карточке копирует адрес вида /?track=id. В нём нет выбранного сета или секретного доступа: такой ссылкой можно делиться. Она открывает карточку без запуска аудио и без ограничений поиска. Если трек недоступен, приложение сообщит об этом. Обновление страницы и кнопки браузера «Назад» и «Вперёд» сохраняют навигацию по ссылкам.",
     },
     {
       title: "Следите за сохранением",
@@ -70,7 +70,7 @@ export const guide: Record<Locale, readonly { title: string; body: string }[]> =
     },
     {
       title: "Share a specific track",
-      body: "A track title is a link you can open in another tab. Copy track link in the track card copies an address such as /?track=id. It contains no selected set or secret access details and is safe to share. It opens the track card without starting audio or restricting search. An unavailable track shows a message. Refreshing the page and using the browser’s Back and Forward buttons preserve link navigation.",
+      body: "A track title is a link you can open in another tab. The small link button beside the title in the track card copies an address such as /?track=id. It contains no selected set or secret access details and is safe to share. It opens the track card without starting audio or restricting search. An unavailable track shows a message. Refreshing the page and using the browser’s Back and Forward buttons preserve link navigation.",
     },
     {
       title: "Check saving status",
